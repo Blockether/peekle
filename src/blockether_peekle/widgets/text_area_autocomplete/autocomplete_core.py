@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Core autocomplete logic with improved architecture."""
+"""Generic autocomplete logic with improved architecture."""
 
-import builtins
-import keyword
 from collections import defaultdict, deque
 from functools import lru_cache
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .autocomplete_config import AutocompleteConfig, CompletionType
 from .matching_strategies import CompositeMatchStrategy
@@ -91,59 +89,39 @@ class CompletionCache:
 
 
 class AutocompleteCore:
-    """Improved autocomplete logic provider."""
+    """Generic autocomplete logic provider."""
 
     def __init__(self, config: Optional[AutocompleteConfig] = None):
         """Initialize with configuration."""
         self._config = config or AutocompleteConfig()
-        self._custom_completions: Set[str] = set()
-        self._completion_types: Dict[str, str] = {}
+        self._completions: Dict[str, str] = {}  # completion_text -> completion_type
         self._cache = CompletionCache(self._config.CACHE_SIZE)
         self._selection_history = SelectionHistory(self._config.MAX_SELECTION_HISTORY)
         self._matching_strategy = CompositeMatchStrategy()
 
-        # Precomputed completion lists
-        self._builtin_completions = self._get_builtin_completions()
-        self._keyword_completions = keyword.kwlist
+    def set_completions(self, completions: Dict[str, str]) -> None:
+        """Set all completions with their types.
 
-        self._init_completion_types()
-
-    @staticmethod
-    def _get_builtin_completions() -> List[str]:
-        """Get filtered builtin completions."""
-        return [name for name in dir(builtins) if not name.startswith("_")]
-
-    def _init_completion_types(self) -> None:
-        """Initialize completion type mappings."""
-        # Type detection for builtins
-        for name in self._builtin_completions:
-            try:
-                obj = getattr(builtins, name)
-                if isinstance(obj, type):
-                    self._completion_types[name] = CompletionType.CLASS
-                elif callable(obj):
-                    self._completion_types[name] = CompletionType.FUNCTION
-                else:
-                    self._completion_types[name] = CompletionType.VARIABLE
-            except (AttributeError, TypeError):
-                self._completion_types[name] = CompletionType.VARIABLE
-
-        # All keywords are keyword type
-        for kw in self._keyword_completions:
-            self._completion_types[kw] = CompletionType.KEYWORD
-
-    def add_custom_completions(self, completions: List[str], completion_type: str = CompletionType.CUSTOM) -> None:
-        """Add custom completion options with type."""
-        self._custom_completions.update(completions)
-        for comp in completions:
-            self._completion_types[comp] = completion_type
+        Args:
+            completions: Dictionary mapping completion text to completion type
+        """
+        self._completions = completions.copy()
         self._cache.clear()
 
-    def clear_custom_completions(self) -> None:
-        """Clear all custom completions."""
-        for comp in self._custom_completions:
-            self._completion_types.pop(comp, None)
-        self._custom_completions.clear()
+    def add_completions(self, completions: List[str], completion_type: str = CompletionType.CUSTOM) -> None:
+        """Add completion options with type.
+
+        Args:
+            completions: List of completion texts
+            completion_type: Type for all these completions
+        """
+        for comp in completions:
+            self._completions[comp] = completion_type
+        self._cache.clear()
+
+    def clear_completions(self) -> None:
+        """Clear all completions."""
+        self._completions.clear()
         self._cache.clear()
 
     def record_selection(self, item: str, context: Optional[str] = None) -> None:
@@ -216,23 +194,7 @@ class AutocompleteCore:
 
     def _collect_candidates(self) -> List[Tuple[str, str]]:
         """Collect all completion candidates."""
-        candidates = []
-
-        # Keywords
-        for kw in self._keyword_completions:
-            candidates.append((kw, CompletionType.KEYWORD))
-
-        # Builtins
-        for builtin in self._builtin_completions:
-            comp_type = self._completion_types.get(builtin, CompletionType.VARIABLE)
-            candidates.append((builtin, comp_type))
-
-        # Custom completions
-        for comp in self._custom_completions:
-            comp_type = self._completion_types.get(comp, CompletionType.CUSTOM)
-            candidates.append((comp, comp_type))
-
-        return candidates
+        return [(text, comp_type) for text, comp_type in self._completions.items()]
 
     def _score_candidates(
         self, prefix: str, candidates: List[Tuple[str, str]], context: Optional[str]
@@ -248,9 +210,7 @@ class AutocompleteCore:
                 history_boost = self._selection_history.get_selection_score(candidate, context)
                 final_score = base_score - (history_boost * self._config.SELECTION_WEIGHT_BOOST)
 
-                # Prioritize certain types
-                if comp_type == CompletionType.KEYWORD and context != "class":
-                    final_score -= 1  # Small boost for keywords
+                # Type-based prioritization can be customized here if needed
 
                 scored.append((final_score, candidate, comp_type))
 

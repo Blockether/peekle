@@ -53,6 +53,7 @@ dev = [
     "pytest-timeout>=2.4.0",
     "httpx>=0.28.1",
     "pyright>=1.1.405",
+    "textual-dev>=1.7.0",
 ]
 
 # Documentation generation

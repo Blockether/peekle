@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Improved implementation of autocomplete using TextArea and OptionList in Textual."""
+"""Generic TextArea widget with autocomplete functionality."""
 
 import time
 from dataclasses import dataclass
@@ -116,21 +116,21 @@ class PositionCalculator:
         return (Offset(x, y), Size(popup_width, popup_height))
 
 
-class ReplTextArea(Container):
-    """TextArea with improved autocomplete functionality."""
+class TextAreaAutocomplete(Container):
+    """Generic TextArea with autocomplete functionality."""
 
     DEFAULT_CSS = """
-    ReplTextArea {
+    TextAreaAutocomplete {
         height: 100%;
         width: 100%;
     }
 
-    ReplTextArea > TextArea {
+    TextAreaAutocomplete > TextArea {
         width: 100%;
         height: 100%;
     }
 
-    ReplTextArea > .autocomplete-list {
+    TextAreaAutocomplete > .autocomplete-list {
         layer: above;
         background: $surface;
         border: solid $primary;
@@ -141,11 +141,11 @@ class ReplTextArea(Container):
         scrollbar-size: 1 1;
     }
 
-    ReplTextArea > .autocomplete-list.visible {
+    TextAreaAutocomplete > .autocomplete-list.visible {
         display: block;
     }
 
-    ReplTextArea > .autocomplete-list:focus {
+    TextAreaAutocomplete > .autocomplete-list:focus {
         border: solid $accent;
     }
     """
@@ -164,7 +164,14 @@ class ReplTextArea(Container):
     _showing_completions = reactive(False)
     _just_completed = reactive(False)
 
-    def __init__(self, *args: Any, config: Optional[AutocompleteConfig] = None, **kwargs: Any):
+    def __init__(
+        self,
+        *args: Any,
+        config: Optional[AutocompleteConfig] = None,
+        language: str = "python",
+        show_line_numbers: bool = False,
+        **kwargs: Any
+    ):
         """Initialize with optional configuration."""
         super().__init__(*args, **kwargs)
         self._config = config or AutocompleteConfig()
@@ -174,13 +181,15 @@ class ReplTextArea(Container):
         self._current_context: Optional[CompletionContext] = None
         self._text_area: Optional[TextArea] = None
         self._option_list: Optional[OptionList] = None
+        self._language = language
+        self._show_line_numbers = show_line_numbers
 
     def compose(self) -> ComposeResult:
         """Create child widgets."""
         self._text_area = TextArea.code_editor(
-            language="python",
+            language=self._language,
             compact=True,
-            show_line_numbers=False,
+            show_line_numbers=self._show_line_numbers,
             tab_behavior="focus",
         )
         self._option_list = OptionList(classes="autocomplete-list", compact=True)
@@ -423,6 +432,33 @@ class ReplTextArea(Container):
             # Force autocomplete check
             self._check_autocomplete()
 
-    def add_custom_completions(self, completions: list[str], completion_type: str = CompletionType.CUSTOM) -> None:
-        """Add custom completions to the autocomplete."""
-        self._autocomplete_core.add_custom_completions(completions, completion_type)
+    def set_completions(self, completions: dict[str, str]) -> None:
+        """Set all completions for autocomplete.
+
+        Args:
+            completions: Dictionary mapping completion text to completion type
+        """
+        self._autocomplete_core.set_completions(completions)
+
+    def add_completions(self, completions: list[str], completion_type: str = CompletionType.CUSTOM) -> None:
+        """Add completions to the autocomplete.
+
+        Args:
+            completions: List of completion texts
+            completion_type: Type for all these completions
+        """
+        self._autocomplete_core.add_completions(completions, completion_type)
+
+    def clear_completions(self) -> None:
+        """Clear all completions."""
+        self._autocomplete_core.clear_completions()
+
+    @property
+    def text_area(self) -> Optional[TextArea]:
+        """Get the underlying TextArea widget."""
+        return self._text_area
+
+    @property
+    def autocomplete_core(self) -> AutocompleteCore:
+        """Get the autocomplete core for direct access if needed."""
+        return self._autocomplete_core
