@@ -99,24 +99,28 @@ class AutocompleteCore:
         self._selection_history = SelectionHistory(self._config.MAX_SELECTION_HISTORY)
         self._matching_strategy = CompositeMatchStrategy()
 
-    def set_completions(self, completions: Dict[str, str]) -> None:
-        """Set all completions with their types.
+    def upsert_completions(
+        self,
+        completions: Dict[str, str] | List[str],
+        completion_type: str = CompletionType.CUSTOM,
+        replace_all: bool = False
+    ) -> None:
+        """Update or insert completions.
 
         Args:
-            completions: Dictionary mapping completion text to completion type
+            completions: Either a dict mapping text to type, or a list of texts
+            completion_type: Type for all completions (used only with list input)
+            replace_all: If True, replaces all existing completions; if False, updates/adds
         """
-        self._completions = completions.copy()
-        self._cache.clear()
+        if replace_all:
+            self._completions.clear()
 
-    def add_completions(self, completions: List[str], completion_type: str = CompletionType.CUSTOM) -> None:
-        """Add completion options with type.
+        if isinstance(completions, dict):
+            self._completions.update(completions)
+        else:
+            for comp in completions:
+                self._completions[comp] = completion_type
 
-        Args:
-            completions: List of completion texts
-            completion_type: Type for all these completions
-        """
-        for comp in completions:
-            self._completions[comp] = completion_type
         self._cache.clear()
 
     def clear_completions(self) -> None:

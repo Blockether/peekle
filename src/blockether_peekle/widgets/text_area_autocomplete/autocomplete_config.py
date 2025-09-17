@@ -16,7 +16,7 @@ class AutocompleteConfig:
     FIRST_CHAR_MISMATCH_PENALTY: int = 5
 
     # Display configuration
-    MIN_PREFIX_LENGTH: int = 2
+    MIN_PREFIX_LENGTH: int = 1
     MAX_SUGGESTIONS: int = 20
     DEBOUNCE_TIME: float = 0.1
 

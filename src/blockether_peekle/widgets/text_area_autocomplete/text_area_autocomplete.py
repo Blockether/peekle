@@ -126,6 +126,7 @@ class TextAreaAutocomplete(Container):
     }
 
     TextAreaAutocomplete > TextArea {
+        padding: 0;
         width: 100%;
         height: 100%;
     }
@@ -159,6 +160,13 @@ class TextAreaAutocomplete(Container):
             self.completion = completion
             self.completion_type = completion_type
             self.context = context
+
+    class Submitted(Message):
+        """TextArea submitted message."""
+
+        def __init__(self, text: str) -> None:
+            self.text = text
+            super().__init__()
 
     # Reactive properties for state management
     _showing_completions = reactive(False)
@@ -341,7 +349,10 @@ class TextAreaAutocomplete(Container):
         self._current_context = None
 
     def on_key(self, event: events.Key) -> None:
-        """Handle key events for autocomplete navigation."""
+        """Handle key events."""
+        if event.key == "ctrl+enter":
+            self._submit()
+
         if not self._showing_completions or not self._option_list:
             return
 
@@ -374,6 +385,16 @@ class TextAreaAutocomplete(Container):
         event.stop()
         if event.option.id:
             self._insert_completion(str(event.option.id))
+
+    def _submit(self) -> None:
+        """Submit the current text area content."""
+        if not self._text_area:
+            return
+
+        text = self._text_area.text
+        self.post_message(self.Submitted(text))
+        self._text_area.clear()
+        self._hide_completions()
 
     def _accept_completion(self) -> None:
         """Accept the currently highlighted completion."""
@@ -432,22 +453,20 @@ class TextAreaAutocomplete(Container):
             # Force autocomplete check
             self._check_autocomplete()
 
-    def set_completions(self, completions: dict[str, str]) -> None:
-        """Set all completions for autocomplete.
+    def upsert_completions(
+        self,
+        completions: dict[str, str] | list[str],
+        completion_type: str = CompletionType.CUSTOM,
+        replace_all: bool = False
+    ) -> None:
+        """Update or insert completions for autocomplete.
 
         Args:
-            completions: Dictionary mapping completion text to completion type
+            completions: Either a dict mapping text to type, or a list of texts
+            completion_type: Type for all completions (used only with list input)
+            replace_all: If True, replaces all existing completions; if False, updates/adds
         """
-        self._autocomplete_core.set_completions(completions)
-
-    def add_completions(self, completions: list[str], completion_type: str = CompletionType.CUSTOM) -> None:
-        """Add completions to the autocomplete.
-
-        Args:
-            completions: List of completion texts
-            completion_type: Type for all these completions
-        """
-        self._autocomplete_core.add_completions(completions, completion_type)
+        self._autocomplete_core.upsert_completions(completions, completion_type, replace_all)
 
     def clear_completions(self) -> None:
         """Clear all completions."""
