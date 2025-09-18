@@ -233,11 +233,11 @@ class PeekleRepl(Container):
 
 
 class PeekleTree(Container):
+    _filepath: reactive[Optional[Path]] = reactive(None)
     _data: reactive[Any] = reactive(None)
 
     # Constants for lazy loading
-    _MAX_INITIAL_ITEMS = 50  # Show first N items initially
-    _MAX_STRING_LENGTH = 100  # Truncate long strings
+    _MAX_INITIAL_ITEMS = 100  # Show first N items initially
 
     def __init__(self) -> None:
         self._tree: Tree[Dict[str, Any]] = Tree("No data")
@@ -247,7 +247,7 @@ class PeekleTree(Container):
     def watch__data(self, data: Any) -> None:
         """When data changes, update tree."""
         self._node_cache.clear()  # Clear cache when data changes
-        self._tree.reset(type(data).__name__)
+        self._tree.reset(self._filepath.name if self._filepath else "No data")
         self._tree.root.expand()
 
         if data is not None:
@@ -270,10 +270,7 @@ class PeekleTree(Container):
             attrs_count = len([k for k in vars(obj).keys() if not k.startswith("_")])
             return f"[dim]({attrs_count} attributes)[/dim]"
         else:
-            value_str = format_value(obj)
-            if len(value_str) > self._MAX_STRING_LENGTH:
-                return value_str[: self._MAX_STRING_LENGTH] + "..."
-            return value_str
+            return format_value(obj)
 
     def _build_tree_level(self, obj: Any, parent_node: TreeNode, start_index: int = 0) -> None:
         """Build only one level of the tree (for lazy loading)."""
@@ -296,8 +293,6 @@ class PeekleTree(Container):
                     self._node_cache[id(node)] = value
                 else:
                     value_str = format_value(value)
-                    if len(value_str) > self._MAX_STRING_LENGTH:
-                        value_str = value_str[: self._MAX_STRING_LENGTH] + "..."
                     parent_node.add_leaf(f"{key_str}: {value_str}")
 
             if len(obj) > start_index + self._MAX_INITIAL_ITEMS:
@@ -330,8 +325,6 @@ class PeekleTree(Container):
                     self._node_cache[id(node)] = item
                 else:
                     value_str = format_value(item)
-                    if len(value_str) > self._MAX_STRING_LENGTH:
-                        value_str = value_str[: self._MAX_STRING_LENGTH] + "..."
                     parent_node.add_leaf(f"[{i}]: {value_str}")
 
             if len(obj) > start_index + self._MAX_INITIAL_ITEMS:
@@ -374,8 +367,6 @@ class PeekleTree(Container):
                     self._node_cache[id(node)] = value
                 else:
                     value_str = format_value(value)
-                    if len(value_str) > self._MAX_STRING_LENGTH:
-                        value_str = value_str[: self._MAX_STRING_LENGTH] + "..."
                     parent_node.add_leaf(f"{key_str}: {value_str}")
 
             if len(attrs) > start_index + self._MAX_INITIAL_ITEMS:
@@ -464,7 +455,7 @@ class PeekleApp(App):
     def compose(self) -> ComposeResult:
         yield Header(icon="")
         yield PeekleRepl().data_bind(PeekleApp._data)
-        yield PeekleTree().data_bind(PeekleApp._data)
+        yield PeekleTree().data_bind(PeekleApp._data, PeekleApp._filepath)
         yield Footer(show_command_palette=False)
 
 
