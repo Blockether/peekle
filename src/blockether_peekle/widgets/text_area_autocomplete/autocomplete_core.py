@@ -103,7 +103,7 @@ class AutocompleteCore:
         self,
         completions: Dict[str, str] | List[str],
         completion_type: str = CompletionType.CUSTOM,
-        replace_all: bool = False
+        replace_all: bool = False,
     ) -> None:
         """Update or insert completions.
 

@@ -14,15 +14,16 @@ import re
 import sys
 import traceback
 from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 
 from rich.highlighter import ReprHighlighter
 from rich.tree import Tree as RichTree
-from textual import on, log
+from textual import log, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Container, Horizontal
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen
@@ -37,11 +38,12 @@ from textual.widgets import (
     Tree,
 )
 from textual.widgets.tree import TreeNode
-from textual.containers import Container
 
-from blockether_peekle.widgets import TextAreaAutocomplete
-from blockether_peekle.widgets.text_area_autocomplete.autocomplete_config import CompletionType
 from blockether_peekle.utils import format_value
+from blockether_peekle.widgets import TextAreaAutocomplete
+from blockether_peekle.widgets.text_area_autocomplete.autocomplete_config import (
+    CompletionType,
+)
 
 
 class PeekleRepl(Container):
@@ -71,10 +73,12 @@ class PeekleRepl(Container):
         """Set up Python REPL-specific completions."""
         if not self._text_area_widget:
             return
-        
-        self._locals.update({
-            "print": self.query_one(RichLog).write,
-        })
+
+        self._locals.update(
+            {
+                "print": self.query_one(RichLog).write,
+            }
+        )
 
         completions: Dict[str, str] = {}
 
@@ -121,7 +125,7 @@ class PeekleRepl(Container):
                     completions[name] = CompletionType.FUNCTION
                 else:
                     completions[name] = CompletionType.VARIABLE
-        
+
         self._text_area_widget.upsert_completions(completions)
 
     def execute_query(self, query: str) -> Any:
@@ -150,9 +154,7 @@ class PeekleRepl(Container):
                     else:
                         var_name = str(target)
                     result = self._locals.get(var_name)
-                    self.query_one(RichLog).write(
-                        f"[green]✓[/green] {var_name} = {format_value(result)}"
-                    )
+                    self.query_one(RichLog).write(f"[green]✓[/green] {var_name} = {format_value(result)}")
                     self._update_locals_completions()
                     # Update tree for assignment result
                     # app.run_worker(
@@ -217,7 +219,7 @@ class PeekleRepl(Container):
 
         if result is None:
             return
-        
+
         if isinstance(result, (str, int, float, bool, type(None), tuple, list, dict, set)):
             tree = RichTree(f"[bold]{type(result).__name__}[/bold]")
             tree.add(format_value(result))
@@ -226,11 +228,165 @@ class PeekleRepl(Container):
     def compose(self) -> ComposeResult:
         yield RichLog(highlight=True, markup=True)
 
-        self._text_area_widget = TextAreaAutocomplete(
-            language="python",
-            show_line_numbers=False
-        )
+        self._text_area_widget = TextAreaAutocomplete(language="python", show_line_numbers=False)
         yield self._text_area_widget
+
+
+class PeekleTree(Container):
+    _data: reactive[Any] = reactive(None)
+
+    # Constants for lazy loading
+    _MAX_INITIAL_ITEMS = 50  # Show first N items initially
+    _MAX_STRING_LENGTH = 100  # Truncate long strings
+
+    def __init__(self) -> None:
+        self._tree: Tree[Dict[str, Any]] = Tree("No data")
+        self._node_cache: Dict[int, Any] = {}  # Cache node data by node id
+        super().__init__()
+
+    def watch__data(self, data: Any) -> None:
+        """When data changes, update tree."""
+        self._node_cache.clear()  # Clear cache when data changes
+        self._tree.reset(type(data).__name__)
+        self._tree.root.expand()
+
+        if data is not None:
+            # Store root data in cache
+            self._node_cache[id(self._tree.root)] = data
+            # Build only the first level
+            self._build_tree_level(data, self._tree.root)
+
+    def _is_expandable(self, obj: Any) -> bool:
+        """Check if an object should be expandable in the tree."""
+        return isinstance(obj, (dict, list, tuple, set)) or (hasattr(obj, "__dict__") and not isinstance(obj, type))
+
+    def _get_object_summary(self, obj: Any) -> str:
+        """Get a summary representation of an object."""
+        if isinstance(obj, dict):
+            return f"[dim]({len(obj)} items)[/dim]"
+        elif isinstance(obj, (list, tuple, set)):
+            return f"[dim]({len(obj)} items)[/dim]"
+        elif hasattr(obj, "__dict__"):
+            attrs_count = len([k for k in vars(obj).keys() if not k.startswith("_")])
+            return f"[dim]({attrs_count} attributes)[/dim]"
+        else:
+            value_str = format_value(obj)
+            if len(value_str) > self._MAX_STRING_LENGTH:
+                return value_str[: self._MAX_STRING_LENGTH] + "..."
+            return value_str
+
+    def _build_tree_level(self, obj: Any, parent_node: TreeNode) -> None:
+        """Build only one level of the tree (for lazy loading)."""
+        if isinstance(obj, dict):
+            items = list(obj.items())[: self._MAX_INITIAL_ITEMS]
+            for key, value in items:
+                key_str = f"[bold cyan]{repr(key)}[/bold cyan]"
+                value_type = f"[bold magenta]{type(value).__name__}[/bold magenta]"
+
+                if self._is_expandable(value):
+                    # Create expandable node without children
+                    label = f"{key_str}: {value_type} {self._get_object_summary(value)}"
+                    node = parent_node.add(
+                        label,
+                        data={"value": value, "loaded": False},
+                        expand=False,
+                        allow_expand=True,
+                    )
+                    # Cache the value for later expansion
+                    self._node_cache[id(node)] = value
+                else:
+                    value_str = format_value(value)
+                    if len(value_str) > self._MAX_STRING_LENGTH:
+                        value_str = value_str[: self._MAX_STRING_LENGTH] + "..."
+                    parent_node.add_leaf(f"{key_str}: {value_str}")
+
+            if len(obj) > self._MAX_INITIAL_ITEMS:
+                parent_node.add_leaf(
+                    f"[bold yellow]... and {len(obj) - self._MAX_INITIAL_ITEMS} more items[/bold yellow]"
+                )
+
+        elif isinstance(obj, (list, tuple, set)):
+            items = list(obj)[: self._MAX_INITIAL_ITEMS]
+            for i, item in enumerate(items):
+                item_type = f"[bold magenta]{type(item).__name__}[/bold magenta]"
+
+                if self._is_expandable(item):
+                    label = f"[{i}]: {item_type} {self._get_object_summary(item)}"
+                    node = parent_node.add(
+                        label,
+                        data={"value": item, "loaded": False},
+                        expand=False,
+                        allow_expand=True,
+                    )
+                    self._node_cache[id(node)] = item
+                else:
+                    value_str = format_value(item)
+                    if len(value_str) > self._MAX_STRING_LENGTH:
+                        value_str = value_str[: self._MAX_STRING_LENGTH] + "..."
+                    parent_node.add_leaf(f"[{i}]: {value_str}")
+
+            if len(obj) > self._MAX_INITIAL_ITEMS:
+                parent_node.add_leaf(
+                    f"[bold yellow]... and {len(obj) - self._MAX_INITIAL_ITEMS} more items[/bold yellow]"
+                )
+
+        elif hasattr(obj, "__dict__"):
+            # For objects with attributes
+            if hasattr(obj, "model_dump"):
+                try:
+                    attrs = obj.model_dump()
+                except Exception:
+                    attrs = {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+            else:
+                attrs = {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+
+            items = list(attrs.items())[: self._MAX_INITIAL_ITEMS]
+            for key, value in items:
+                key_str = f"[bold magenta]{key}[/bold magenta]"
+                value_type = f"[bold cyan]{type(value).__name__}[/bold cyan]"
+
+                if self._is_expandable(value):
+                    label = f"{key_str}: {value_type} {self._get_object_summary(value)}"
+                    node = parent_node.add(
+                        label,
+                        data={"value": value, "loaded": False},
+                        expand=False,
+                        allow_expand=True,
+                    )
+                    self._node_cache[id(node)] = value
+                else:
+                    value_str = format_value(value)
+                    if len(value_str) > self._MAX_STRING_LENGTH:
+                        value_str = value_str[: self._MAX_STRING_LENGTH] + "..."
+                    parent_node.add_leaf(f"{key_str}: {value_str}")
+
+            if len(attrs) > self._MAX_INITIAL_ITEMS:
+                parent_node.add_leaf(
+                    f"[bold yellow]... and {len(attrs) - self._MAX_INITIAL_ITEMS} more attributes[/bold yellow]"
+                )
+        else:
+            parent_node.add_leaf(format_value(obj))
+
+    @on(Tree.NodeExpanded)
+    def handle_node_expanded(self, event: Tree.NodeExpanded) -> None:
+        """Load children when a node is expanded."""
+        node = event.node
+
+        # Check if node has data and hasn't been loaded yet
+        if node.data and isinstance(node.data, dict):
+            if not node.data.get("loaded", True):
+                # Get cached value
+                value = self._node_cache.get(id(node))
+                if value is not None:
+                    # Clear existing children (in case of placeholder)
+                    node.remove_children()
+                    # Build children for this node
+                    self._build_tree_level(value, node)
+                    # Mark as loaded
+                    node.data["loaded"] = True
+
+    def compose(self) -> ComposeResult:
+        yield self._tree
 
 
 class PeekleApp(App):
@@ -246,7 +402,7 @@ class PeekleApp(App):
 
     def on_mount(self) -> None:
         self.title = "Peekle"
-    
+
         if self._filepath:
             self._load_file(self._filepath)
 
@@ -266,7 +422,8 @@ class PeekleApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(icon="")
-        yield PeekleRepl().data_bind(PeekleApp._data) 
+        yield PeekleRepl().data_bind(PeekleApp._data)
+        yield PeekleTree().data_bind(PeekleApp._data)
         yield Footer(show_command_palette=False)
 
 

@@ -178,7 +178,7 @@ class TextAreaAutocomplete(Container):
         config: Optional[AutocompleteConfig] = None,
         language: str = "python",
         show_line_numbers: bool = False,
-        **kwargs: Any
+        **kwargs: Any,
     ):
         """Initialize with optional configuration."""
         super().__init__(*args, **kwargs)
@@ -457,7 +457,7 @@ class TextAreaAutocomplete(Container):
         self,
         completions: dict[str, str] | list[str],
         completion_type: str = CompletionType.CUSTOM,
-        replace_all: bool = False
+        replace_all: bool = False,
     ) -> None:
         """Update or insert completions for autocomplete.
 
