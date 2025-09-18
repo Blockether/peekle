@@ -136,70 +136,78 @@ class PeekleRepl(Container):
 
             # Try to parse the query
             try:
-                parsed = ast.parse(query, mode="single")
+                # First try to parse as exec mode to handle multi-line statements
+                parsed = ast.parse(query, mode="exec")
 
-                # Check if it's an import statement
-                if isinstance(parsed.body[0], (ast.Import, ast.ImportFrom)):
-                    exec(query, self._locals, self._locals)
-                    self.query_one(RichLog).write(f"[green]✓[/green] {query}")
-                    self._update_locals_completions()
-                    return None
-
-                # Check if it's an assignment
-                elif isinstance(parsed.body[0], ast.Assign):
-                    exec(query, self._locals, self._locals)
-                    target = parsed.body[0].targets[0]
-                    if isinstance(target, ast.Name):
-                        var_name = target.id
-                    else:
-                        var_name = str(target)
-                    result = self._locals.get(var_name)
-                    self.query_one(RichLog).write(f"[green]✓[/green] {var_name} = {format_value(result)}")
-                    self._update_locals_completions()
-                    # Update tree for assignment result
-                    # app.run_worker(
-                    #     app.query_one(ReplTree).render_tree(query, result),
-                    #     exclusive=True,
-                    # )
-                    return result
-
-                # Check if it's a function/class definition or other statement
-                elif isinstance(
-                    parsed.body[0],
-                    (
-                        ast.FunctionDef,
-                        ast.ClassDef,
-                        ast.For,
-                        ast.While,
-                        ast.With,
-                        ast.If,
-                    ),
-                ):
+                # Handle multiple statements
+                if len(parsed.body) > 1:
+                    # Execute all statements
                     exec(query, self._locals, self._locals)
                     self.query_one(RichLog).write("[green]✓[/green] Executed")
                     self._update_locals_completions()
                     return None
 
-                # Otherwise try to evaluate as expression
+                # Single statement handling
+                elif len(parsed.body) == 1:
+                    stmt = parsed.body[0]
+
+                    # Check if it's an import statement
+                    if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                        exec(query, self._locals, self._locals)
+                        self.query_one(RichLog).write(f"[green]✓[/green] {query}")
+                        self._update_locals_completions()
+                        return None
+
+                    # Check if it's an assignment
+                    elif isinstance(stmt, ast.Assign):
+                        exec(query, self._locals, self._locals)
+                        target = stmt.targets[0]
+                        if isinstance(target, ast.Name):
+                            var_name = target.id
+                        else:
+                            var_name = str(target)
+                        result = self._locals.get(var_name)
+                        self.query_one(RichLog).write(f"[green]✓[/green] {var_name} = {format_value(result)}")
+                        self._update_locals_completions()
+                        return result
+
+                    # Check if it's a function/class definition or other statement
+                    elif isinstance(
+                        stmt,
+                        (
+                            ast.FunctionDef,
+                            ast.ClassDef,
+                            ast.For,
+                            ast.While,
+                            ast.With,
+                            ast.If,
+                        ),
+                    ):
+                        exec(query, self._locals, self._locals)
+                        self.query_one(RichLog).write("[green]✓[/green] Executed")
+                        self._update_locals_completions()
+                        return None
+
+                    # Check if it's an expression statement
+                    elif isinstance(stmt, ast.Expr):
+                        # Try to evaluate as expression
+                        result = eval(compile(ast.Expression(stmt.value), '<string>', 'eval'), self._locals, self._locals)
+                        return result
+
+                    # Otherwise execute as statement
+                    else:
+                        exec(query, self._locals, self._locals)
+                        self.query_one(RichLog).write("[green]✓[/green] Executed")
+                        self._update_locals_completions()
+                        return None
+
+                # Empty input
                 else:
-                    result = eval(query, self._locals, self._locals)
-                    # Update tree for expression result
-                    # if result is not None:
-                    #     app.run_worker(
-                    #         app.query_one(ReplTree).render_tree(query, result),
-                    #         exclusive=True,
-                    #     )
-                    return result
+                    return None
 
             except SyntaxError:
                 # If parsing fails, try as expression
                 result = eval(query, self._locals, self._locals)
-                # Update tree for expression result
-                # if result is not None:
-                #     app.run_worker(
-                #         app.query_one(ReplTree).render_tree(query, result),
-                #         exclusive=True,
-                #     )
                 return result
 
         except Exception as e:
@@ -214,16 +222,15 @@ class PeekleRepl(Container):
     @on(TextAreaAutocomplete.Submitted)
     def handle_text_area_submitted(self, message: TextAreaAutocomplete.Submitted) -> None:
         """Handle submitted code from the text area."""
-        self.query_one(RichLog).write(f">>> {message.text}")
+        self.query_one(RichLog).write(f">>> {message.text.strip()}")
         result = self.execute_query(message.text)
 
         if result is None:
             return
 
-        if isinstance(result, (str, int, float, bool, type(None), tuple, list, dict, set)):
-            tree = RichTree(f"[bold]{type(result).__name__}[/bold]")
-            tree.add(format_value(result))
-            self.query_one(RichLog).write(tree)
+        tree = RichTree(f"[bold]{type(result).__name__}[/bold]")
+        tree.add(format_value(result))
+        self.query_one(RichLog).write(tree)
 
     def compose(self) -> ComposeResult:
         yield RichLog(highlight=True, markup=True)
