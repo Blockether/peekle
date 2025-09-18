@@ -275,10 +275,10 @@ class PeekleTree(Container):
                 return value_str[: self._MAX_STRING_LENGTH] + "..."
             return value_str
 
-    def _build_tree_level(self, obj: Any, parent_node: TreeNode) -> None:
+    def _build_tree_level(self, obj: Any, parent_node: TreeNode, start_index: int = 0) -> None:
         """Build only one level of the tree (for lazy loading)."""
         if isinstance(obj, dict):
-            items = list(obj.items())[: self._MAX_INITIAL_ITEMS]
+            items = list(obj.items())[start_index : start_index + self._MAX_INITIAL_ITEMS]
             for key, value in items:
                 key_str = f"[bold cyan]{repr(key)}[/bold cyan]"
                 value_type = f"[bold magenta]{type(value).__name__}[/bold magenta]"
@@ -300,14 +300,23 @@ class PeekleTree(Container):
                         value_str = value_str[: self._MAX_STRING_LENGTH] + "..."
                     parent_node.add_leaf(f"{key_str}: {value_str}")
 
-            if len(obj) > self._MAX_INITIAL_ITEMS:
-                parent_node.add_leaf(
-                    f"[bold yellow]... and {len(obj) - self._MAX_INITIAL_ITEMS} more items[/bold yellow]"
+            if len(obj) > start_index + self._MAX_INITIAL_ITEMS:
+                remaining = len(obj) - start_index - self._MAX_INITIAL_ITEMS
+                node = parent_node.add(
+                    f"[bold yellow]... load {min(remaining, self._MAX_INITIAL_ITEMS)} more items (of {remaining} total)[/bold yellow]",
+                    data={
+                        "more_items": True,
+                        "parent_obj": obj,
+                        "next_index": start_index + self._MAX_INITIAL_ITEMS,
+                        "obj_type": "dict",
+                    },
+                    expand=False,
+                    allow_expand=True,
                 )
 
         elif isinstance(obj, (list, tuple, set)):
-            items = list(obj)[: self._MAX_INITIAL_ITEMS]
-            for i, item in enumerate(items):
+            items = list(obj)[start_index : start_index + self._MAX_INITIAL_ITEMS]
+            for i, item in enumerate(items, start=start_index):
                 item_type = f"[bold magenta]{type(item).__name__}[/bold magenta]"
 
                 if self._is_expandable(item):
@@ -325,9 +334,18 @@ class PeekleTree(Container):
                         value_str = value_str[: self._MAX_STRING_LENGTH] + "..."
                     parent_node.add_leaf(f"[{i}]: {value_str}")
 
-            if len(obj) > self._MAX_INITIAL_ITEMS:
-                parent_node.add_leaf(
-                    f"[bold yellow]... and {len(obj) - self._MAX_INITIAL_ITEMS} more items[/bold yellow]"
+            if len(obj) > start_index + self._MAX_INITIAL_ITEMS:
+                remaining = len(obj) - start_index - self._MAX_INITIAL_ITEMS
+                node = parent_node.add(
+                    f"[bold yellow]... load {min(remaining, self._MAX_INITIAL_ITEMS)} more items (of {remaining} total)[/bold yellow]",
+                    data={
+                        "more_items": True,
+                        "parent_obj": obj,
+                        "next_index": start_index + self._MAX_INITIAL_ITEMS,
+                        "obj_type": "list",
+                    },
+                    expand=False,
+                    allow_expand=True,
                 )
 
         elif hasattr(obj, "__dict__"):
@@ -340,7 +358,7 @@ class PeekleTree(Container):
             else:
                 attrs = {k: v for k, v in vars(obj).items() if not k.startswith("_")}
 
-            items = list(attrs.items())[: self._MAX_INITIAL_ITEMS]
+            items = list(attrs.items())[start_index : start_index + self._MAX_INITIAL_ITEMS]
             for key, value in items:
                 key_str = f"[bold magenta]{key}[/bold magenta]"
                 value_type = f"[bold cyan]{type(value).__name__}[/bold cyan]"
@@ -360,9 +378,18 @@ class PeekleTree(Container):
                         value_str = value_str[: self._MAX_STRING_LENGTH] + "..."
                     parent_node.add_leaf(f"{key_str}: {value_str}")
 
-            if len(attrs) > self._MAX_INITIAL_ITEMS:
-                parent_node.add_leaf(
-                    f"[bold yellow]... and {len(attrs) - self._MAX_INITIAL_ITEMS} more attributes[/bold yellow]"
+            if len(attrs) > start_index + self._MAX_INITIAL_ITEMS:
+                remaining = len(attrs) - start_index - self._MAX_INITIAL_ITEMS
+                node = parent_node.add(
+                    f"[bold yellow]... load {min(remaining, self._MAX_INITIAL_ITEMS)} more attributes (of {remaining} total)[/bold yellow]",
+                    data={
+                        "more_items": True,
+                        "parent_obj": attrs,
+                        "next_index": start_index + self._MAX_INITIAL_ITEMS,
+                        "obj_type": "attrs",
+                    },
+                    expand=False,
+                    allow_expand=True,
                 )
         else:
             parent_node.add_leaf(format_value(obj))
@@ -372,9 +399,23 @@ class PeekleTree(Container):
         """Load children when a node is expanded."""
         node = event.node
 
-        # Check if node has data and hasn't been loaded yet
+        # Check if node has data
         if node.data and isinstance(node.data, dict):
-            if not node.data.get("loaded", True):
+            # Handle "more items" nodes
+            if node.data.get("more_items"):
+                parent_obj = node.data["parent_obj"]
+                next_index = node.data["next_index"]
+
+                # Remove this node and add the next batch of items to parent
+                parent = node.parent
+                if parent:
+                    # Remove the "more items" node
+                    node.remove()
+                    # Add the next batch of items
+                    self._build_tree_level(parent_obj, parent, start_index=next_index)
+
+            # Handle regular expandable nodes
+            elif not node.data.get("loaded", True):
                 # Get cached value
                 value = self._node_cache.get(id(node))
                 if value is not None:
