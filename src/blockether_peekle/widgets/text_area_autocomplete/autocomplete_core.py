@@ -3,9 +3,9 @@
 
 from collections import defaultdict, deque
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
-from .autocomplete_config import AutocompleteConfig, CompletionType
+from .autocomplete_config import AutocompleteConfig
 from .matching_strategies import CompositeMatchStrategy
 
 
@@ -91,41 +91,32 @@ class CompletionCache:
 class AutocompleteCore:
     """Generic autocomplete logic provider."""
 
-    def __init__(self, config: Optional[AutocompleteConfig] = None):
-        """Initialize with configuration."""
+    def __init__(
+        self,
+        config: Optional[AutocompleteConfig] = None,
+        completion_provider: Optional[Callable[[str, Optional[str]], List[Tuple[str, str]]]] = None,
+    ):
+        """Initialize with configuration and optional completion provider.
+
+        Args:
+            config: Configuration for autocomplete behavior
+            completion_provider: Callback that returns [(text, type)] given (prefix, context)
+        """
         self._config = config or AutocompleteConfig()
-        self._completions: Dict[str, str] = {}  # completion_text -> completion_type
+        self._completion_provider = completion_provider
         self._cache = CompletionCache(self._config.CACHE_SIZE)
         self._selection_history = SelectionHistory(self._config.MAX_SELECTION_HISTORY)
         self._matching_strategy = CompositeMatchStrategy()
 
-    def upsert_completions(
-        self,
-        completions: Dict[str, str] | List[str],
-        completion_type: str = CompletionType.CUSTOM,
-        replace_all: bool = False,
+    def set_completion_provider(
+        self, provider: Callable[[str, Optional[str]], List[Tuple[str, str]]]
     ) -> None:
-        """Update or insert completions.
+        """Set or update the completion provider callback.
 
         Args:
-            completions: Either a dict mapping text to type, or a list of texts
-            completion_type: Type for all completions (used only with list input)
-            replace_all: If True, replaces all existing completions; if False, updates/adds
+            provider: Callback that returns [(text, type)] given (prefix, context)
         """
-        if replace_all:
-            self._completions.clear()
-
-        if isinstance(completions, dict):
-            self._completions.update(completions)
-        else:
-            for comp in completions:
-                self._completions[comp] = completion_type
-
-        self._cache.clear()
-
-    def clear_completions(self) -> None:
-        """Clear all completions."""
-        self._completions.clear()
+        self._completion_provider = provider
         self._cache.clear()
 
     def record_selection(self, item: str, context: Optional[str] = None) -> None:
@@ -184,7 +175,7 @@ class AutocompleteCore:
             return cached_result
 
         # Collect all candidates
-        all_candidates = self._collect_candidates()
+        all_candidates = self._collect_candidates(prefix, context)
 
         # Score and filter matches
         scored_suggestions = self._score_candidates(prefix, all_candidates, context)
@@ -196,9 +187,19 @@ class AutocompleteCore:
         self._cache.put(cache_key, unique_suggestions)
         return unique_suggestions
 
-    def _collect_candidates(self) -> List[Tuple[str, str]]:
-        """Collect all completion candidates."""
-        return [(text, comp_type) for text, comp_type in self._completions.items()]
+    def _collect_candidates(self, prefix: str, context: Optional[str]) -> List[Tuple[str, str]]:
+        """Collect all completion candidates from provider.
+
+        Args:
+            prefix: The prefix to match
+            context: Optional context string
+
+        Returns:
+            List of (completion_text, completion_type) tuples
+        """
+        if self._completion_provider:
+            return self._completion_provider(prefix, context)
+        return []
 
     def _score_candidates(
         self, prefix: str, candidates: List[Tuple[str, str]], context: Optional[str]

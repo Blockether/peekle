@@ -16,7 +16,7 @@ import traceback
 from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from rich.highlighter import ReprHighlighter
 from rich.tree import Tree as RichTree
@@ -64,13 +64,13 @@ class PeekleRepl(Container):
 
     def on_mount(self) -> None:
         if self._text_area_widget:
-            self._setup_builtin_completions()
+            self._setup_completion_provider()
 
             if self._text_area_widget._text_area:
                 self._text_area_widget._text_area.focus()
 
-    def _setup_builtin_completions(self) -> None:
-        """Set up Python REPL-specific completions."""
+    def _setup_completion_provider(self) -> None:
+        """Set up Python REPL-specific completion provider."""
         if not self._text_area_widget:
             return
 
@@ -80,21 +80,34 @@ class PeekleRepl(Container):
             }
         )
 
-        completions: Dict[str, str] = {}
+        # Set the completion provider callback
+        self._text_area_widget.set_completion_provider(self._get_completions)
+
+    def _get_completions(self, prefix: str, context: Optional[str] = None) -> List[Tuple[str, str]]:
+        """Get completions for the given prefix and context.
+
+        Args:
+            prefix: The text prefix to match
+            context: Optional context (previous token)
+
+        Returns:
+            List of (completion_text, completion_type) tuples
+        """
+        completions: List[Tuple[str, str]] = []
 
         # Add locals
         for name, obj in self._locals.items():
             if not name.startswith("_"):
                 if isinstance(obj, type):
-                    completions[name] = CompletionType.CLASS
+                    completions.append((name, CompletionType.CLASS))
                 elif callable(obj):
-                    completions[name] = CompletionType.FUNCTION
+                    completions.append((name, CompletionType.FUNCTION))
                 else:
-                    completions[name] = CompletionType.VARIABLE
+                    completions.append((name, CompletionType.VARIABLE))
 
         # Add Python keywords
         for kw in keyword.kwlist:
-            completions[kw] = CompletionType.KEYWORD
+            completions.append((kw, CompletionType.KEYWORD))
 
         # Add Python builtins
         for name in dir(builtins):
@@ -102,31 +115,21 @@ class PeekleRepl(Container):
                 try:
                     obj = getattr(builtins, name)
                     if isinstance(obj, type):
-                        completions[name] = CompletionType.CLASS
+                        completions.append((name, CompletionType.CLASS))
                     elif callable(obj):
-                        completions[name] = CompletionType.FUNCTION
+                        completions.append((name, CompletionType.FUNCTION))
                     else:
-                        completions[name] = CompletionType.VARIABLE
+                        completions.append((name, CompletionType.VARIABLE))
                 except (AttributeError, TypeError):
-                    completions[name] = CompletionType.VARIABLE
+                    completions.append((name, CompletionType.VARIABLE))
 
-        # Set all completions at once
-        self._text_area_widget.upsert_completions(completions)
+        return completions
 
     def _update_locals_completions(self) -> None:
-        completions: Dict[str, str] = {}
-
-        # Add locals
-        for name, obj in self._locals.items():
-            if not name.startswith("_"):
-                if isinstance(obj, type):
-                    completions[name] = CompletionType.CLASS
-                elif callable(obj):
-                    completions[name] = CompletionType.FUNCTION
-                else:
-                    completions[name] = CompletionType.VARIABLE
-
-        self._text_area_widget.upsert_completions(completions)
+        """Trigger cache clear when locals change."""
+        # Just clear the cache in the autocomplete core to force refresh
+        if self._text_area_widget and self._text_area_widget.autocomplete_core:
+            self._text_area_widget.autocomplete_core._cache.clear()
 
     def execute_query(self, query: str) -> Any:
         """Execute a Python expression or statement as a query on the data."""
@@ -235,7 +238,11 @@ class PeekleRepl(Container):
     def compose(self) -> ComposeResult:
         yield RichLog(highlight=True, markup=True)
 
-        self._text_area_widget = TextAreaAutocomplete(language="python", show_line_numbers=False)
+        self._text_area_widget = TextAreaAutocomplete(
+            language="python",
+            show_line_numbers=False,
+            completion_provider=self._get_completions,
+        )
         yield self._text_area_widget
 
 

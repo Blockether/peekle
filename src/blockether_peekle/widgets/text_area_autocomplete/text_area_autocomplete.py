@@ -4,7 +4,7 @@
 import time
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from textual import events, on
 from textual.app import App, ComposeResult
@@ -17,7 +17,7 @@ from textual.timer import Timer
 from textual.widgets import OptionList, TextArea
 from textual.widgets.option_list import Option
 
-from .autocomplete_config import AutocompleteConfig, CompletionColors, CompletionType
+from .autocomplete_config import AutocompleteConfig, CompletionColors
 from .autocomplete_core import AutocompleteCore
 
 
@@ -176,14 +176,22 @@ class TextAreaAutocomplete(Container):
         self,
         *args: Any,
         config: Optional[AutocompleteConfig] = None,
+        completion_provider: Optional[Callable[[str, Optional[str]], List[Tuple[str, str]]]] = None,
         language: str = "python",
         show_line_numbers: bool = False,
         **kwargs: Any,
     ):
-        """Initialize with optional configuration."""
+        """Initialize with optional configuration and completion provider.
+
+        Args:
+            config: Configuration for autocomplete behavior
+            completion_provider: Callback that returns [(text, type)] given (prefix, context)
+            language: Language for syntax highlighting
+            show_line_numbers: Whether to show line numbers in the text area
+        """
         super().__init__(*args, **kwargs)
         self._config = config or AutocompleteConfig()
-        self._autocomplete_core = AutocompleteCore(self._config)
+        self._autocomplete_core = AutocompleteCore(self._config, completion_provider)
         self._position_calculator = PositionCalculator(self._config)
         self._debounced_worker = DebouncedWorker(self._config.DEBOUNCE_TIME)
         self._current_context: Optional[CompletionContext] = None
@@ -191,6 +199,7 @@ class TextAreaAutocomplete(Container):
         self._option_list: Optional[OptionList] = None
         self._language = language
         self._show_line_numbers = show_line_numbers
+        self._completion_types: Dict[str, str] = {}  # Track types for completions
 
     def compose(self) -> ComposeResult:
         """Create child widgets."""
@@ -320,6 +329,8 @@ class TextAreaAutocomplete(Container):
                 f"{match_indicator}{completion_text:<{self._config.OPTION_TEXT_WIDTH}} " f"{color}{completion_type}[/]"
             )
             self._option_list.add_option(Option(formatted, id=completion_text))
+            # Store type for later retrieval
+            self._completion_types[completion_text] = completion_type
 
         # Calculate and set position
         try:
@@ -435,9 +446,7 @@ class TextAreaAutocomplete(Container):
 
     def _get_completion_type(self, completion: str) -> str:
         """Get the type of a completion."""
-        # This would be retrieved from the autocomplete core
-        # For now, return a default
-        return CompletionType.VARIABLE
+        return self._completion_types.get(completion, "custom")
 
     @on(events.Blur)
     def handle_blur(self, event: events.Blur) -> None:
@@ -453,24 +462,15 @@ class TextAreaAutocomplete(Container):
             # Force autocomplete check
             self._check_autocomplete()
 
-    def upsert_completions(
-        self,
-        completions: dict[str, str] | list[str],
-        completion_type: str = CompletionType.CUSTOM,
-        replace_all: bool = False,
+    def set_completion_provider(
+        self, provider: Callable[[str, Optional[str]], List[Tuple[str, str]]]
     ) -> None:
-        """Update or insert completions for autocomplete.
+        """Set or update the completion provider callback.
 
         Args:
-            completions: Either a dict mapping text to type, or a list of texts
-            completion_type: Type for all completions (used only with list input)
-            replace_all: If True, replaces all existing completions; if False, updates/adds
+            provider: Callback that returns [(text, type)] given (prefix, context)
         """
-        self._autocomplete_core.upsert_completions(completions, completion_type, replace_all)
-
-    def clear_completions(self) -> None:
-        """Clear all completions."""
-        self._autocomplete_core.clear_completions()
+        self._autocomplete_core.set_completion_provider(provider)
 
     @property
     def text_area(self) -> Optional[TextArea]:
