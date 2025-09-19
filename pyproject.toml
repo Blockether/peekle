@@ -18,6 +18,7 @@ requires-python = ">=3.12"
 
 # Core runtime dependencies only
 dependencies = [
+    "jedi>=0.19.2",
     "rich>=14.1.0",
     "textual[syntax]>=6.1.0",
 ]

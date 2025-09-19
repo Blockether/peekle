@@ -1,165 +1,98 @@
-#!/usr/bin/env python3
-"""Generic TextArea widget with autocomplete functionality."""
+from __future__ import annotations
 
-import time
 from dataclasses import dataclass
-from threading import Lock
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
+from operator import itemgetter
+from typing import (
+    Callable,
+    ClassVar,
+    Sequence,
+    cast,
+)
+from rich.text import Text
 from textual import events, on
-from textual.app import App, ComposeResult
-from textual.containers import Container
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.content import Content
 from textual.css.query import NoMatches
-from textual.geometry import Offset, Size
-from textual.message import Message
-from textual.reactive import reactive
-from textual.timer import Timer
-from textual.widgets import OptionList, TextArea
+from textual.geometry import Offset, Region, Spacing
+from textual.style import Style
+from textual.widget import Widget
+from textual.widgets import TextArea, OptionList
+from textual.widgets.text_area import Location
 from textual.widgets.option_list import Option
-
-from .autocomplete_config import AutocompleteConfig, CompletionColors
-from .autocomplete_core import AutocompleteCore
+from textual.message import Message
 
 
 @dataclass
-class CompletionContext:
-    """Context information for completion."""
+class TargetState:
+    text: str
+    """The content in the target widget."""
 
-    cursor_row: int
-    cursor_col: int
-    word_start: int
-    word_end: int
-    prefix: str
-    full_line: str
-    previous_token: Optional[str] = None
+    cursor_position: Location
+    """The cursor position in the target widget."""
 
 
-class DebouncedWorker:
-    """Thread-safe debounced timer management."""
-
-    def __init__(self, delay: float):
-        """Initialize with debounce delay."""
-        self._delay = delay
-        self._lock = Lock()
-        self._current_timer: Optional[Timer] = None
-        self._latest_time: float = 0.0
-
-    def schedule(self, container: Container, callback: Callable, *args: Any) -> None:
-        """Schedule a debounced callback."""
-        with self._lock:
-            current_time = time.time()
-            self._latest_time = current_time
-
-            # Cancel previous timer
-            if self._current_timer:
-                self._current_timer.stop()
-
-            # Schedule new callback
-            self._current_timer = container.set_timer(
-                self._delay,
-                lambda: self._execute_if_latest(current_time, callback, *args),
-            )
-
-    def _execute_if_latest(self, scheduled_time: float, callback: Callable, *args: Any) -> None:
-        """Execute callback only if no newer one was scheduled."""
-        with self._lock:
-            if scheduled_time == self._latest_time:
-                callback(*args)
-                self._current_timer = None
-
-    def cancel(self) -> None:
-        """Cancel any pending timer."""
-        with self._lock:
-            if self._current_timer:
-                self._current_timer.stop()
-            self._current_timer = None
-
-
-class PositionCalculator:
-    """Calculate optimal position for autocomplete popup."""
-
-    def __init__(self, config: AutocompleteConfig):
-        """Initialize with configuration."""
-        self._config = config
-
-    def calculate_position(
+class AutocompleteOption(Option):
+    def __init__(
         self,
-        context: CompletionContext,
-        container_size: Size,
-        suggestion_count: int,
-        char_width: int = 1,
-        char_height: int = 1,
-    ) -> Tuple[Offset, Size]:
-        """
-        Calculate optimal position and size for popup.
+        prompt: str | Content,
+        value: str,
+        completion_prefix_length: int,
+        id: str | None = None,
+        disabled: bool = False,
+    ) -> None:
+        self.value = value
+        self.completion_prefix_length = completion_prefix_length
 
-        Returns:
-            Tuple of (offset, size) for the popup
-        """
-        # Calculate initial position
-        x = min(context.cursor_col * char_width, container_size.width - 30)
-        y = (context.cursor_row + 1) * char_height
-
-        # Calculate popup dimensions
-        popup_height = min(self._config.OPTION_LIST_MAX_HEIGHT, suggestion_count)
-        popup_width = max(self._config.OPTION_LIST_MIN_WIDTH, 30)
-
-        # Adjust if popup would go off screen
-        if y + popup_height > container_size.height - 2:
-            # Show above cursor instead
-            y = max(0, context.cursor_row * char_height - popup_height - 1)
-
-        if x + popup_width > container_size.width:
-            # Shift left to fit
-            x = max(0, container_size.width - popup_width - 2)
-
-        return (Offset(x, y), Size(popup_width, popup_height))
+        super().__init__(prompt, id, disabled)
 
 
-class TextAreaAutocomplete(Container):
-    """Generic TextArea with autocomplete functionality."""
+class AutocompleteOptionHit(AutocompleteOption):
+    """A dropdown item which matches the current search string - in other words
+    AutoComplete.match has returned a score greater than 0 for this item.
+    """
 
-    DEFAULT_CSS = """
+
+class AutoCompleteList(OptionList):
+    pass
+
+
+class TextAreaAutocomplete(Widget):
+    BINDINGS = [
+        Binding("escape", "hide", "Hide dropdown", show=False),
+    ]
+
+    DEFAULT_CSS = """\
     TextAreaAutocomplete {
-        height: 100%;
-        width: 100%;
-    }
-
-    TextAreaAutocomplete > TextArea {
-        padding: 0;
-        width: 100%;
-        height: 100%;
-    }
-
-    TextAreaAutocomplete > .autocomplete-list {
-        layer: above;
-        background: $surface;
-        border: solid $primary;
-        max-height: 10;
+        height: auto;
         width: auto;
-        min-width: 20;
+        max-height: 12;
         display: none;
-        scrollbar-size: 1 1;
-    }
+        background: $surface;
+        overlay: screen;
 
-    TextAreaAutocomplete > .autocomplete-list.visible {
-        display: block;
-    }
+        & AutoCompleteList {
+            width: auto;
+            height: auto;
+            border: none;
+            padding: 0;
+            margin: 0;
+            scrollbar-size-vertical: 1;
+            text-wrap: nowrap;
+            color: $foreground;
+            background: transparent;
+        }
 
-    TextAreaAutocomplete > .autocomplete-list:focus {
-        border: solid $accent;
+        & .autocomplete--highlight-match {
+            text-style: bold;
+        }
+
     }
     """
 
-    class CompletionSelected(Message):
-        """Message sent when a completion is selected."""
-
-        def __init__(self, completion: str, completion_type: str, context: Optional[str] = None):
-            """Initialize with completion details."""
-            super().__init__()
-            self.completion = completion
-            self.completion_type = completion_type
-            self.context = context
+    COMPONENT_CLASSES: ClassVar[set[str]] = {
+        "autocomplete--highlight-match",
+    }
 
     class Submitted(Message):
         """TextArea submitted message."""
@@ -168,316 +101,337 @@ class TextAreaAutocomplete(Container):
             self.text = text
             super().__init__()
 
-    # Reactive properties for state management
-    _showing_completions = reactive(False)
-    _just_completed = reactive(False)
-
     def __init__(
         self,
-        *args: Any,
-        config: Optional[AutocompleteConfig] = None,
-        completion_provider: Optional[Callable[[str, Optional[str]], List[Tuple[str, str]]]] = None,
-        language: str = "python",
-        show_line_numbers: bool = False,
-        **kwargs: Any,
-    ):
-        """Initialize with optional configuration and completion provider.
+        target: TextArea,
+        candidates: Callable[[TargetState], list[AutocompleteOption]] | None = None,
+        *,
+        name: str | None = None,
+        id: str | None = None,
+        classes: str | None = None,
+        disabled: bool = False,
+    ) -> None:
+        """An autocomplete widget.
 
         Args:
-            config: Configuration for autocomplete behavior
-            completion_provider: Callback that returns [(text, type)] given (prefix, context)
-            language: Language for syntax highlighting
-            show_line_numbers: Whether to show line numbers in the text area
+            target: An TextArea instance or a selector string used to query an TextArea instance.
+                If a selector is used, remember that widgets are not available until the widget has been mounted (don't
+                use the selector in `compose` - use it in `on_mount` instead).
+            candidates: The candidates to match on, or a function which returns the candidates to match on.
+                If set to None, the candidates will be fetched by directly calling the `get_candidates` method,
+                which is what you'll probably want to do if you're subclassing AutoComplete and supplying your
+                own custom `get_candidates` method.
         """
-        super().__init__(*args, **kwargs)
-        self._config = config or AutocompleteConfig()
-        self._autocomplete_core = AutocompleteCore(self._config, completion_provider)
-        self._position_calculator = PositionCalculator(self._config)
-        self._debounced_worker = DebouncedWorker(self._config.DEBOUNCE_TIME)
-        self._current_context: Optional[CompletionContext] = None
-        self._text_area: Optional[TextArea] = None
-        self._option_list: Optional[OptionList] = None
-        self._language = language
-        self._show_line_numbers = show_line_numbers
-        self._completion_types: Dict[str, str] = {}  # Track types for completions
+        super().__init__(name=name, id=id, classes=classes, disabled=disabled)
+        self._target = target
+
+        # Users can supply strings as a convenience for the simplest cases,
+        # so let's convert them to AutocompleteOptions.
+        self.candidates: (
+            list[AutocompleteOption]
+            | Callable[[TargetState], list[AutocompleteOption]]
+            | None
+        )
+        """The candidates to match on, or a function which returns the candidates to match on."""
+        self.candidates = candidates
+
+        self._target_state = TargetState("", (0, 0))
+        """Cached state of the target TextArea."""
 
     def compose(self) -> ComposeResult:
-        """Create child widgets."""
-        self._text_area = TextArea.code_editor(
-            language=self._language,
-            compact=True,
-            show_line_numbers=self._show_line_numbers,
-            tab_behavior="focus",
-        )
-        self._option_list = OptionList(classes="autocomplete-list", compact=True)
-        yield self._text_area
-        yield self._option_list
+        option_list = AutoCompleteList()
+        option_list.can_focus = False
+        yield option_list
 
     def on_mount(self) -> None:
-        """Set up bindings when mounted."""
-        if not self._option_list:
-            return
-
-        self._option_list.add_class("hidden")
-
-    def _extract_completion_context(self, text_area: TextArea) -> Optional[CompletionContext]:
-        """Extract context for completion from text area."""
-        cursor_row, cursor_col = text_area.cursor_location
-        document = text_area.document
-
-        if cursor_row >= len(document.lines):
-            return None
-
-        current_line = document.lines[cursor_row]
-
-        # Find word boundaries
-        word_start = cursor_col
-        word_end = cursor_col
-
-        # Check for word before cursor
-        if cursor_col > 0 and self._is_word_char(current_line[cursor_col - 1]):
-            # Find start of word
-            word_start = cursor_col - 1
-            while word_start > 0 and self._is_word_char(current_line[word_start - 1]):
-                word_start -= 1
-
-            # Find end of word
-            while word_end < len(current_line) and self._is_word_char(current_line[word_end]):
-                word_end += 1
-
-            prefix = current_line[word_start:cursor_col]
-
-            if len(prefix) >= self._config.MIN_PREFIX_LENGTH:
-                # Extract previous token for context
-                before_word = current_line[:word_start].strip()
-                previous_token = before_word.split()[-1] if before_word else None
-
-                return CompletionContext(
-                    cursor_row=cursor_row,
-                    cursor_col=cursor_col,
-                    word_start=word_start,
-                    word_end=word_end,
-                    prefix=prefix,
-                    full_line=current_line,
-                    previous_token=previous_token,
-                )
-
-        return None
-
-    @staticmethod
-    def _is_word_char(char: str) -> bool:
-        """Check if character is part of a word."""
-        return char.isalnum() or char == "_"
-
-    def _check_autocomplete(self) -> None:
-        """Check if autocomplete should be triggered."""
-        if self._just_completed:
-            self._just_completed = False
-            return
-
-        if not self._text_area:
-            return
-
-        context = self._extract_completion_context(self._text_area)
-
-        if context:
-            self._current_context = context
-            self._show_completions(context)
-        else:
-            self._hide_completions()
-
-    @on(TextArea.Changed)
-    def handle_text_changed(self, event: TextArea.Changed) -> None:
-        """Handle text changes with debouncing."""
-        event.stop()
-        self._debounced_worker.schedule(self, self._check_autocomplete)
-
-    @on(events.Key)
-    def handle_cursor_movement(self, event: events.Key) -> None:
-        """Handle cursor movement keys."""
-        if event.key in ["left", "right"] and not self._showing_completions:
-            self.call_after_refresh(self._check_autocomplete)
-
-    def _show_completions(self, context: CompletionContext) -> None:
-        """Show completion options."""
-        if not self._option_list:
-            return
-
-        # Get completions with context
-        completions = self._autocomplete_core.get_completions(
-            prefix=context.prefix,
-            context=context.previous_token,
-            full_text=context.full_line,
-            cursor_position=context.cursor_col,
-        )
-
-        if not completions:
-            self._hide_completions()
-            return
-
-        # Clear and populate option list
-        self._option_list.clear_options()
-
-        for completion_text, completion_type in completions:
-            # Format option with color and type
-            color = CompletionColors.get_color(completion_type)
-            match_indicator = ""
-            if not completion_text.lower().startswith(context.prefix.lower()):
-                match_indicator = "~"
-
-            formatted = (
-                f"{match_indicator}{completion_text:<{self._config.OPTION_TEXT_WIDTH}} " f"{color}{completion_type}[/]"
-            )
-            self._option_list.add_option(Option(formatted, id=completion_text))
-            # Store type for later retrieval
-            self._completion_types[completion_text] = completion_type
-
-        # Calculate and set position
-        try:
-            offset, size = self._position_calculator.calculate_position(context, self.size, len(completions))
-
-            self._option_list.styles.offset = offset
-            self._option_list.styles.width = size.width
-            self._option_list.styles.height = size.height
-
-            self._option_list.remove_class("hidden")
-            self._option_list.add_class("visible")
-            self._showing_completions = True
-
-            # Highlight first item
-            if self._option_list.option_count > 0:
-                self._option_list.highlighted = 0
-
-        except (AttributeError, ValueError):
-            self._hide_completions()
-
-    def _hide_completions(self) -> None:
-        """Hide the completion list."""
-        if self._option_list:
-            self._option_list.remove_class("visible")
-            self._option_list.add_class("hidden")
-        self._showing_completions = False
-        self._current_context = None
-
-    def on_key(self, event: events.Key) -> None:
-        """Handle key events."""
-        if event.key == "ctrl+enter":
-            self._submit()
-
-        if not self._showing_completions or not self._option_list:
-            return
-
-        if self._option_list.option_count == 0:
-            return
-
-        handled = True
-
-        if event.key == "down":
-            self._option_list.action_cursor_down()
-        elif event.key == "up":
-            self._option_list.action_cursor_up()
-        elif event.key == "tab":
-            self._accept_completion()
-        elif event.key == "escape":
-            self._hide_completions()
-        else:
-            handled = False
-
-        if handled:
-            event.stop()
-            event.prevent_default()
-
-    @on(OptionList.OptionSelected)
-    def handle_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Handle selection of a completion option."""
-        if not self._showing_completions:
-            return
-
-        event.stop()
-        if event.option.id:
-            self._insert_completion(str(event.option.id))
+        # Subscribe to the target widget's reactive attributes.
+        self.target.message_signal.subscribe(self, self._listen_to_messages)  # type: ignore
+        self._subscribe_to_target()
+        self._handle_target_update()
+        self.set_interval(0.2, lambda: self.call_after_refresh(self._align_to_target))
 
     def _submit(self) -> None:
         """Submit the current text area content."""
-        if not self._text_area:
+        if not self.target:
             return
 
-        text = self._text_area.text
+        text = self.target.text
         self.post_message(self.Submitted(text))
-        self._text_area.clear()
-        self._hide_completions()
+        self.target.clear()
+        self.action_hide()
 
-    def _accept_completion(self) -> None:
-        """Accept the currently highlighted completion."""
-        if not self._option_list or self._option_list.highlighted is None:
+    def _listen_to_messages(self, event: events.Event) -> None:
+        """Listen to some events of the target widget."""
+
+        if isinstance(event, events.Key) and event.key == "ctrl+enter":
+            self._submit()
+
+        try:
+            option_list = self.option_list
+        except NoMatches:
+            # This can happen if the event is an Unmount event
+            # during application shutdown.
             return
 
-        option = self._option_list.get_option_at_index(self._option_list.highlighted)
-        if option and option.id:
-            self._insert_completion(str(option.id))
+        if isinstance(event, events.Key) and option_list.option_count:
+            displayed = self.display
+            highlighted = option_list.highlighted or 0
+            if event.key == "down":
+                # Check if there's only one item and it matches the search string
+                if option_list.option_count == 1:
+                    search_string = self.get_search_string(self._get_target_state())
+                    first_option = option_list.get_option_at_index(0).prompt
+                    text_from_option = (
+                        first_option.plain
+                        if isinstance(first_option, Text)
+                        else first_option
+                    )
+                    if text_from_option == search_string:
+                        # Don't prevent default behavior in this case
+                        return
 
-    def _insert_completion(self, completion: str) -> None:
-        """Insert the selected completion into the text area."""
-        if not self._current_context or not self._text_area:
+                # If you press `down` while in an TextArea and the autocomplete is currently
+                # hidden, then we should show the dropdown.
+                event.prevent_default()
+                event.stop()
+                if displayed:
+                    highlighted = (highlighted + 1) % option_list.option_count
+                else:
+                    self.display = True
+                    highlighted = 0
+
+                option_list.highlighted = highlighted
+
+            elif event.key == "up":
+                if displayed:
+                    event.prevent_default()
+                    event.stop()
+                    highlighted = (highlighted - 1) % option_list.option_count
+                    option_list.highlighted = highlighted
+            elif event.key == "enter":
+                event.prevent_default()
+                event.stop()
+                self._complete(option_index=highlighted)
+            elif event.key == "tab":
+                event.prevent_default()
+                event.stop()
+                self._complete(option_index=highlighted)
+            elif event.key == "escape":
+                if displayed:
+                    event.prevent_default()
+                    event.stop()
+                self.action_hide()
+
+        if isinstance(event, TextArea.Changed):
+            # We suppress Changed events from the target widget, so that we don't
+            # handle change events as a result of performing a completion.
+            self._handle_target_update()
+
+    def action_hide(self) -> None:
+        self.styles.display = "none"
+
+    def action_show(self) -> None:
+        self.styles.display = "block"
+
+    def _complete(self, option_index: int) -> None:
+        """Do the completion (i.e. insert the selected item into the target TextArea).
+
+        This is when the user highlights an option in the dropdown and presses tab or enter.
+        """
+        if not self.display or self.option_list.option_count == 0:
             return
 
-        context = self._current_context
+        option_list = self.option_list
+        highlighted = option_index
+        option = cast(AutocompleteOption, option_list.get_option_at_index(highlighted))
+        with self.prevent(TextArea.Changed):
+            self.apply_completion(
+                option.value, option.completion_prefix_length, self._get_target_state()
+            )
+        self.post_completion()
 
-        # Build new line with completion
-        current_line = self._text_area.document.lines[context.cursor_row]
-        new_line = current_line[: context.word_start] + completion + current_line[context.word_end :]
+    def post_completion(self) -> None:
+        """This method is called after a completion is applied. By default, it simply hides the dropdown."""
+        self.action_hide()
 
-        # Replace the line
-        self._text_area.replace(new_line, (context.cursor_row, 0), (context.cursor_row, len(current_line)))
-
-        # Move cursor to end of completion
-        new_cursor_col = context.word_start + len(completion)
-        self._text_area.cursor_location = (context.cursor_row, new_cursor_col)
-
-        # Record selection for learning
-        self._autocomplete_core.record_selection(completion, context.previous_token)
-
-        # Post completion message
-        completion_type = self._get_completion_type(completion)
-        self.post_message(self.CompletionSelected(completion, completion_type, context.previous_token))
-
-        self._just_completed = True
-        self._hide_completions()
-
-    def _get_completion_type(self, completion: str) -> str:
-        """Get the type of a completion."""
-        return self._completion_types.get(completion, "custom")
-
-    @on(events.Blur)
-    def handle_blur(self, event: events.Blur) -> None:
-        """Hide completions when text area loses focus."""
-        if event._sender == self._text_area:
-            self._hide_completions()
-
-    def action_complete(self) -> None:
-        """Action to trigger completion."""
-        if self._showing_completions:
-            self._accept_completion()
-        else:
-            # Force autocomplete check
-            self._check_autocomplete()
-
-    def set_completion_provider(
-        self, provider: Callable[[str, Optional[str]], List[Tuple[str, str]]]
+    def apply_completion(
+        self, value: str, completion_prefix_length: int, state: TargetState
     ) -> None:
-        """Set or update the completion provider callback.
+        """Apply the completion to the target widget.
+
+        This method updates the state of the target widget to the reflect
+        the value the user has chosen from the dropdown list.
+        """
+        target = self.target
+        row, col = state.cursor_position
+        # Calculate the start position by going back completion_prefix_length characters
+        start_col = max(0, col - completion_prefix_length)
+        start_location = (row, start_col)
+
+        # Find the end of the current word (in case cursor is in the middle)
+        text = state.text
+        line = text.split("\n")[row] if "\n" in text else text
+        end_col = col
+
+        # Move end_col forward to include any remaining characters of the current word
+        while end_col < len(line) and (line[end_col].isalnum() or line[end_col] == "_"):
+            end_col += 1
+
+        end_location = (row, end_col)
+
+        # Replace from the start of the prefix to the end of the word
+        target.replace(
+            value, start_location, end_location, maintain_selection_offset=False
+        )
+
+        # We need to rebuild here because we've prevented the Changed events
+        # from being sent to the target widget, meaning AutoComplete won't spot
+        # intercept that message, and would not trigger a rebuild like it normally
+        # does when a Changed event is received.
+        new_target_state = self._get_target_state()
+        self._rebuild_options(new_target_state)
+
+    @property
+    def target(self) -> TextArea:
+        """The resolved target widget."""
+        if isinstance(self._target, TextArea):
+            return self._target
+        else:
+            target = self.screen.query_one(self._target)
+            assert isinstance(target, TextArea)
+            return target
+
+    def _subscribe_to_target(self) -> None:
+        """Attempt to subscribe to the target widget, if it's available."""
+        target = self.target
+        self.watch(target, "has_focus", self._handle_focus_change)
+        self.watch(target, "selection", self._align_and_rebuild)
+
+    def _align_and_rebuild(self) -> None:
+        self._align_to_target()
+        self._target_state = self._get_target_state()
+        self._rebuild_options(self._target_state)
+
+    def _align_to_target(self) -> None:
+        """Align the dropdown to the position of the cursor within
+        the target widget, and constrain it to be within the screen."""
+        x, y = self.target.cursor_screen_offset
+        dropdown = self.option_list
+        width, height = dropdown.outer_size
+
+        # Constrain the dropdown within the screen.
+        x, y, _width, _height = Region(x - 1, y + 1, width, height).constrain(
+            "inside",
+            "none",
+            Spacing.all(0),
+            self.screen.scrollable_content_region,
+        )
+        self.absolute_offset = Offset(x, y)
+        self.refresh(layout=True)
+
+    def _get_target_state(self) -> TargetState:
+        """Get the state of the target widget."""
+        target = self.target
+        return TargetState(
+            text=target.text,
+            cursor_position=target.cursor_location,
+        )
+
+    def _handle_focus_change(self, has_focus: bool) -> None:
+        """Called when the focus of the target widget changes."""
+        if not has_focus:
+            self.action_hide()
+        else:
+            target_state = self._get_target_state()
+            self._rebuild_options(target_state)
+
+    def _handle_target_update(self) -> None:
+        """Called when the state (text or cursor position) of the target is updated.
+
+        Here we align the dropdown to the target, determine if it should be visible,
+        and rebuild the options in it.
+        """
+        self._target_state = self._get_target_state()
+        search_string = self.get_search_string(self._target_state)
+
+        # Determine visibility after the user makes a change in the
+        # target widget (e.g. typing in a character in the TextArea).
+        self._rebuild_options(self._target_state)
+        self._align_to_target()
+
+        if self.should_show_dropdown(search_string):
+            self.action_show()
+        else:
+            self.action_hide()
+
+    def should_show_dropdown(self, search_string: str) -> bool:
+        """
+        Determine whether to show or hide the dropdown based on the current state.
+
+        This method can be overridden to customize the visibility behavior.
 
         Args:
-            provider: Callback that returns [(text, type)] given (prefix, context)
+            search_string: The current search string.
+
+        Returns:
+            bool: True if the dropdown should be shown, False otherwise.
         """
-        self._autocomplete_core.set_completion_provider(provider)
+        option_list = self.option_list
+        option_count = option_list.option_count
+
+        if len(search_string) == 0 or option_count == 0:
+            return False
+        elif option_count == 1:
+            first_option = option_list.get_option_at_index(0).prompt
+            text_from_option = (
+                first_option.plain if isinstance(first_option, Text) else first_option
+            )
+            return text_from_option != search_string
+        else:
+            return True
+
+    def _rebuild_options(self, target_state: TargetState) -> None:
+        """Rebuild the options in the dropdown.
+
+        Args:
+            target_state: The state of the target widget.
+        """
+        option_list = self.option_list
+        option_list.clear_options()
+        if self.target.has_focus:
+            candidates = self.get_candidates(target_state)
+            if candidates:
+                option_list.add_options(candidates)
+                option_list.highlighted = 0
+
+    def get_search_string(self, target_state: TargetState) -> str:
+        """This value will be passed to the match function.
+
+        This could be, for example, the text in the target widget, or a substring of that text.
+
+        Returns:
+            The search string that will be used to filter the dropdown options.
+        """
+        return target_state.text
+
+    def get_candidates(self, target_state: TargetState) -> list[AutocompleteOption]:
+        """Get the candidates to match against."""
+        candidates = self.candidates
+        if isinstance(candidates, Sequence):
+            return list(candidates)
+        elif candidates is None:
+            raise NotImplementedError(
+                "You must implement get_candidates in your TextAreaAutocomplete subclass, because candidates is None"
+            )
+        else:
+            # candidates is a callable
+            return candidates(target_state)
 
     @property
-    def text_area(self) -> Optional[TextArea]:
-        """Get the underlying TextArea widget."""
-        return self._text_area
+    def option_list(self) -> AutoCompleteList:
+        return self.query_one(AutoCompleteList)
 
-    @property
-    def autocomplete_core(self) -> AutocompleteCore:
-        """Get the autocomplete core for direct access if needed."""
-        return self._autocomplete_core
+    @on(OptionList.OptionSelected, "AutoCompleteList")
+    def _apply_completion(self, event: OptionList.OptionSelected) -> None:
+        # Handles click events on dropdown items.
+        self._complete(event.option_index)

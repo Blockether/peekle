@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from jedi import Interpreter
 
 from rich.highlighter import ReprHighlighter
 from rich.tree import Tree as RichTree
@@ -29,6 +30,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import (
+    TextArea,
     Footer,
     Header,
     Input,
@@ -41,8 +43,9 @@ from textual.widgets.tree import TreeNode
 
 from blockether_peekle.utils import format_value
 from blockether_peekle.widgets import TextAreaAutocomplete
-from blockether_peekle.widgets.text_area_autocomplete.autocomplete_config import (
-    CompletionType,
+from blockether_peekle.widgets.text_area_autocomplete import (
+    AutocompleteOption,
+    TargetState,
 )
 
 
@@ -54,8 +57,8 @@ class PeekleRepl(Container):
         max-height: 95%;
     }
 
-    TextAreaAutocomplete > TextArea {
-        height: auto;
+    TextArea {
+        padding: 0 !important;
     }
     """
 
@@ -64,72 +67,7 @@ class PeekleRepl(Container):
 
     def on_mount(self) -> None:
         if self._text_area_widget:
-            self._setup_completion_provider()
-
-            if self._text_area_widget._text_area:
-                self._text_area_widget._text_area.focus()
-
-    def _setup_completion_provider(self) -> None:
-        """Set up Python REPL-specific completion provider."""
-        if not self._text_area_widget:
-            return
-
-        self._locals.update(
-            {
-                "print": self.query_one(RichLog).write,
-            }
-        )
-
-        # Set the completion provider callback
-        self._text_area_widget.set_completion_provider(self._get_completions)
-
-    def _get_completions(self, prefix: str, context: Optional[str] = None) -> List[Tuple[str, str]]:
-        """Get completions for the given prefix and context.
-
-        Args:
-            prefix: The text prefix to match
-            context: Optional context (previous token)
-
-        Returns:
-            List of (completion_text, completion_type) tuples
-        """
-        completions: List[Tuple[str, str]] = []
-
-        # Add locals
-        for name, obj in self._locals.items():
-            if not name.startswith("_"):
-                if isinstance(obj, type):
-                    completions.append((name, CompletionType.CLASS))
-                elif callable(obj):
-                    completions.append((name, CompletionType.FUNCTION))
-                else:
-                    completions.append((name, CompletionType.VARIABLE))
-
-        # Add Python keywords
-        for kw in keyword.kwlist:
-            completions.append((kw, CompletionType.KEYWORD))
-
-        # Add Python builtins
-        for name in dir(builtins):
-            if not name.startswith("_"):
-                try:
-                    obj = getattr(builtins, name)
-                    if isinstance(obj, type):
-                        completions.append((name, CompletionType.CLASS))
-                    elif callable(obj):
-                        completions.append((name, CompletionType.FUNCTION))
-                    else:
-                        completions.append((name, CompletionType.VARIABLE))
-                except (AttributeError, TypeError):
-                    completions.append((name, CompletionType.VARIABLE))
-
-        return completions
-
-    def _update_locals_completions(self) -> None:
-        """Trigger cache clear when locals change."""
-        # Just clear the cache in the autocomplete core to force refresh
-        if self._text_area_widget and self._text_area_widget.autocomplete_core:
-            self._text_area_widget.autocomplete_core._cache.clear()
+            self._text_area_widget.focus()
 
     def execute_query(self, query: str) -> Any:
         """Execute a Python expression or statement as a query on the data."""
@@ -147,7 +85,6 @@ class PeekleRepl(Container):
                     # Execute all statements
                     exec(query, self._locals, self._locals)
                     self.query_one(RichLog).write("[green]✓[/green] Executed")
-                    self._update_locals_completions()
                     return None
 
                 # Single statement handling
@@ -158,7 +95,6 @@ class PeekleRepl(Container):
                     if isinstance(stmt, (ast.Import, ast.ImportFrom)):
                         exec(query, self._locals, self._locals)
                         self.query_one(RichLog).write(f"[green]✓[/green] {query}")
-                        self._update_locals_completions()
                         return None
 
                     # Check if it's an assignment
@@ -170,8 +106,9 @@ class PeekleRepl(Container):
                         else:
                             var_name = str(target)
                         result = self._locals.get(var_name)
-                        self.query_one(RichLog).write(f"[green]✓[/green] {var_name} = {format_value(result)}")
-                        self._update_locals_completions()
+                        self.query_one(RichLog).write(
+                            f"[green]✓[/green] {var_name} = {format_value(result)}"
+                        )
                         return result
 
                     # Check if it's a function/class definition or other statement
@@ -188,20 +125,22 @@ class PeekleRepl(Container):
                     ):
                         exec(query, self._locals, self._locals)
                         self.query_one(RichLog).write("[green]✓[/green] Executed")
-                        self._update_locals_completions()
                         return None
 
                     # Check if it's an expression statement
                     elif isinstance(stmt, ast.Expr):
                         # Try to evaluate as expression
-                        result = eval(compile(ast.Expression(stmt.value), '<string>', 'eval'), self._locals, self._locals)
+                        result = eval(
+                            compile(ast.Expression(stmt.value), "<string>", "eval"),
+                            self._locals,
+                            self._locals,
+                        )
                         return result
 
                     # Otherwise execute as statement
                     else:
                         exec(query, self._locals, self._locals)
                         self.query_one(RichLog).write("[green]✓[/green] Executed")
-                        self._update_locals_completions()
                         return None
 
                 # Empty input
@@ -220,10 +159,11 @@ class PeekleRepl(Container):
     def watch__data(self, data: Any) -> None:
         """When data changes, update locals and completions."""
         self._locals.update({"x": data})
-        self._update_locals_completions()
 
     @on(TextAreaAutocomplete.Submitted)
-    def handle_text_area_submitted(self, message: TextAreaAutocomplete.Submitted) -> None:
+    def handle_text_area_submitted(
+        self, message: TextAreaAutocomplete.Submitted
+    ) -> None:
         """Handle submitted code from the text area."""
         self.query_one(RichLog).write(f">>> {message.text.strip()}")
         result = self.execute_query(message.text)
@@ -235,15 +175,45 @@ class PeekleRepl(Container):
         tree.add(format_value(result))
         self.query_one(RichLog).write(tree)
 
+    def candidates_callback(self, state: TargetState) -> list[AutocompleteOption]:
+        row, col = state.cursor_position
+        script = Interpreter(state.text, [self._locals, locals(), globals()])
+        completions = script.complete(line=row + 1, column=col, fuzzy=True)
+
+        type_colors = {
+            "module": "bold green",
+            "class": "bold yellow",
+            "instance": "bold blue",
+            "function": "bold cyan",
+            "param": "bold magenta",
+            "path": "bold green",
+            "keyword": "bold red",
+            "property": "bold blue",
+            "statement": "bold cyan",
+        }
+
+        return [
+            AutocompleteOption(
+                f"{c.name} [{type_colors.get(c.type, 'bold magenta')}]{c.type}[/{type_colors.get(c.type, 'bold magenta')}]",
+                c.name,
+                c.get_completion_prefix_length(),
+            )
+            for c in completions
+        ]
+
     def compose(self) -> ComposeResult:
         yield RichLog(highlight=True, markup=True)
 
-        self._text_area_widget = TextAreaAutocomplete(
+        self._text_area_widget = TextArea.code_editor(
             language="python",
+            tab_behavior="focus",
             show_line_numbers=False,
-            completion_provider=self._get_completions,
+            compact=True,
         )
         yield self._text_area_widget
+        yield TextAreaAutocomplete(
+            self._text_area_widget, candidates=self.candidates_callback
+        )
 
 
 class PeekleTree(Container):
@@ -272,7 +242,9 @@ class PeekleTree(Container):
 
     def _is_expandable(self, obj: Any) -> bool:
         """Check if an object should be expandable in the tree."""
-        return isinstance(obj, (dict, list, tuple, set)) or (hasattr(obj, "__dict__") and not isinstance(obj, type))
+        return isinstance(obj, (dict, list, tuple, set)) or (
+            hasattr(obj, "__dict__") and not isinstance(obj, type)
+        )
 
     def _get_object_summary(self, obj: Any) -> str:
         """Get a summary representation of an object."""
@@ -286,10 +258,14 @@ class PeekleTree(Container):
         else:
             return format_value(obj)
 
-    def _build_tree_level(self, obj: Any, parent_node: TreeNode, start_index: int = 0) -> None:
+    def _build_tree_level(
+        self, obj: Any, parent_node: TreeNode, start_index: int = 0
+    ) -> None:
         """Build only one level of the tree (for lazy loading)."""
         if isinstance(obj, dict):
-            items = list(obj.items())[start_index : start_index + self._MAX_INITIAL_ITEMS]
+            items = list(obj.items())[
+                start_index : start_index + self._MAX_INITIAL_ITEMS
+            ]
             for key, value in items:
                 key_str = f"[bold cyan]{repr(key)}[/bold cyan]"
                 value_type = f"[bold magenta]{type(value).__name__}[/bold magenta]"
@@ -361,11 +337,15 @@ class PeekleTree(Container):
                 try:
                     attrs = obj.model_dump()
                 except Exception:
-                    attrs = {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+                    attrs = {
+                        k: v for k, v in vars(obj).items() if not k.startswith("_")
+                    }
             else:
                 attrs = {k: v for k, v in vars(obj).items() if not k.startswith("_")}
 
-            items = list(attrs.items())[start_index : start_index + self._MAX_INITIAL_ITEMS]
+            items = list(attrs.items())[
+                start_index : start_index + self._MAX_INITIAL_ITEMS
+            ]
             for key, value in items:
                 key_str = f"[bold magenta]{key}[/bold magenta]"
                 value_type = f"[bold cyan]{type(value).__name__}[/bold cyan]"
@@ -459,7 +439,9 @@ class PeekleApp(App):
                 with open(filepath, "rb") as f:
                     self._data = pickle.load(f)
 
-                    self.notify(f"[green]✓[/green] Loaded: {filepath} [dim]Type: {type(self._data).__name__}[/dim]")
+                    self.notify(
+                        f"[green]✓[/green] Loaded: {filepath} [dim]Type: {type(self._data).__name__}[/dim]"
+                    )
 
         except Exception as e:
             self.notify(f"[red]✗[/red] Error loading {filepath} file: {e}")
@@ -495,7 +477,9 @@ In the REPL:
 
     parser.add_argument("file", nargs="?", help="Pickle file to load")
 
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode with full tracebacks")
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable debug mode with full tracebacks"
+    )
 
     args = parser.parse_args()
 
