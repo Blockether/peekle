@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from attr import dataclass
 from jedi import Interpreter
 from rich.highlighter import ReprHighlighter
 from rich.tree import Tree as RichTree
@@ -38,6 +39,7 @@ from textual.widgets import (
     Static,
     TextArea,
     Tree,
+    Rule,
 )
 from textual.widgets.tree import TreeNode
 
@@ -51,15 +53,14 @@ from blockether_peekle.widgets.autocomplete import (
 )
 
 
+@dataclass
+class LoadFileScreenState:
+    path: Path
+    variable_name: str
+
+
 class LoadFilePathInput(PathAutocomplete):
     _extensions = [".pkl", ".pickle", ".p"]
-
-    class Selected(Message):
-        """Path selected message."""
-
-        def __init__(self, path: str) -> None:
-            self.path = path
-            super().__init__()
 
     def get_candidates(self, target_state: TargetState) -> list[PathOption]:
         candidates = super().get_candidates(target_state)
@@ -67,21 +68,19 @@ class LoadFilePathInput(PathAutocomplete):
         return [
             item
             for item in candidates
-            if (self.path / item.value).is_dir()
-            or item.value.endswith(tuple(self._extensions))
+            if os.path.isdir(item.path) or item.value.endswith(tuple(self._extensions))
         ]
 
     def post_completion(self) -> None:
-        if not self.target.value.endswith(tuple(self._extensions)):
+        if not self.target.value.endswith(
+            tuple(self._extensions)
+        ) or not os.path.isfile(self.target.value):
             return super().post_completion()
 
-        self.post_message(self.Selected(self.target.value))
-        self.option_list.remove()
-        self.remove()
-        self.app.pop_screen()
+        self.post_message(self.Submitted(self.target.value))
 
 
-class LoadFileScreen(ModalScreen):
+class LoadFileScreen(ModalScreen[LoadFileScreenState]):
     DEFAULT_CSS = """
     LoadFileScreen {
         align: center middle;
@@ -90,19 +89,53 @@ class LoadFileScreen(ModalScreen):
     #dialog {
         padding-left: 1;
         width: 90%;
-        height: 5;
+        height: auto;
         border: thick $background 60%;
         background: $surface;
     }
+
+    Container {
+        height: auto;
+    }
+
+    #dialog-path {
+        margin-bottom: 1;
+    }
     """
 
+    @on(LoadFilePathInput.Submitted)
+    def handle_load_file_path_input_submitted(
+        self, message: LoadFilePathInput.Submitted
+    ) -> None:
+        """Handle submitted code from the input."""
+        self.query("#varname").focus()
+
+    @on(Input.Submitted)
+    def handle_input_submitted(self, message: Input.Submitted) -> None:
+        """Handle submitted code from the input."""
+        if message.input.id == "varname":
+            self.dismiss(
+                LoadFileScreenState(
+                    path=Path(self.query_one(LoadFilePathInput).target.value),
+                    variable_name=message.input.value.strip(),
+                )
+            )
+
     def compose(self) -> ComposeResult:
-        input_widget = Input(placeholder="Enter a path...", compact=True)
+        input_widget = Input(placeholder="~/")
 
         yield Widget(
-            Label("Load pickle file"),
-            input_widget,
-            LoadFilePathInput(target=input_widget),
+            Container(
+                Label("Pickle file path"),
+                input_widget,
+                LoadFilePathInput(target=input_widget),
+                id="dialog-path",
+            ),
+            Container(
+                Label("Variable name"),
+                Input(placeholder="Variable name", id="varname", value="x"),
+                id="dialog-varname",
+            ),
             id="dialog",
         )
 
@@ -123,8 +156,16 @@ class PeekleRepl(Container):
     }
     """
 
-    _data: reactive[Any] = reactive(None)
+    class QueryExecuted(Message):
+        """Query executed message."""
+
+        def __init__(self, query: str, result: Any) -> None:
+            self.query = query
+            self.result = result
+            super().__init__()
+
     _locals: reactive[Dict[str, Any]] = reactive({})
+    _locals_data_variable: reactive[str] = reactive("x")
 
     def on_mount(self) -> None:
         if self._text_area_widget:
@@ -217,9 +258,15 @@ class PeekleRepl(Container):
             self.query_one(RichLog).write(f"[red]Error:[/red] {e}")
             return None
 
-    def watch__data(self, data: Any) -> None:
+    def update_locals_data(self, variable_name: str, data: Any) -> None:
         """When data changes, update locals and completions."""
-        self._locals.update({"x": data})
+        if data is None:
+            return
+
+        self._locals.pop(self._locals_data_variable, None)
+        self._locals.update({variable_name: data})
+
+        self._locals_data_variable = variable_name
 
     @on(TextAreaAutocomplete.Submitted)
     def handle_text_area_submitted(
@@ -232,13 +279,15 @@ class PeekleRepl(Container):
         if result is None:
             return
 
+        self.post_message(self.QueryExecuted(message.text, result))
+
         tree = RichTree(f"[bold]{type(result).__name__}[/bold]")
         tree.add(format_value(result))
         self.query_one(RichLog).write(tree)
 
     def candidates_callback(self, state: TargetState) -> list[TextAreaOption]:
         row, col = state.cursor_position
-        script = Interpreter(state.text, [self._locals, locals(), globals()])
+        script = Interpreter(state.text, [self._locals])
         completions = script.complete(line=row + 1, column=col, fuzzy=True)
 
         type_colors = {
@@ -278,9 +327,6 @@ class PeekleRepl(Container):
 
 
 class PeekleTree(Container):
-    _filepath: reactive[Optional[Path]] = reactive(None)
-    _data: reactive[Any] = reactive(None)
-
     # Constants for lazy loading
     _MAX_INITIAL_ITEMS = 100  # Show first N items initially
 
@@ -289,10 +335,10 @@ class PeekleTree(Container):
         self._node_cache: Dict[int, Any] = {}  # Cache node data by node id
         super().__init__()
 
-    def watch__data(self, data: Any) -> None:
+    def update_tree_data(self, label: str, data: Any) -> None:
         """When data changes, update tree."""
         self._node_cache.clear()  # Clear cache when data changes
-        self._tree.reset(self._filepath.name if self._filepath else "No data")
+        self._tree.reset(label)
         self._tree.root.expand()
 
         if data is not None:
@@ -485,6 +531,7 @@ class PeekleApp(App):
 
     _filepath: reactive[Optional[Path]] = reactive(None)
     _data: reactive[Any] = reactive(None)
+    _variable_name: reactive[str] = reactive("x")
 
     def __init__(self, filepath: Optional[Path] = None) -> None:
         self._text_area_widget: Optional[TextAreaAutocomplete] = None
@@ -498,18 +545,20 @@ class PeekleApp(App):
             self._load_file(self._filepath)
 
     def action_trigger_load_file_menu(self) -> None:
-        self.push_screen(LoadFileScreen())
+        def on_load_file(data: LoadFileScreenState | None) -> None:
+            if data is None:
+                return
 
-    def on_load_file_path_input_selected(
-        self, message: LoadFilePathInput.Selected
-    ) -> None:
-        self._load_file(Path(message.path))
+            self._load_file(data.path, data.variable_name)
 
-    def _load_file(self, filepath: Path) -> None:
+        self.push_screen(LoadFileScreen(), on_load_file)
+
+    def _load_file(self, filepath: Path, variable_name: str = "x") -> None:
         """Load a pickle file."""
         try:
             if filepath:
                 self._filepath = filepath
+                self._variable_name = variable_name
 
                 with open(filepath, "rb") as f:
                     self._data = pickle.load(f)
@@ -518,15 +567,27 @@ class PeekleApp(App):
                         f"[green]✓[/green] Loaded: {filepath} [dim]Type: {type(self._data).__name__}[/dim]"
                     )
 
+                self.query_one(PeekleRepl).update_locals_data(
+                    self._variable_name, self._data
+                )
+                self.query_one(PeekleTree).update_tree_data(
+                    self._variable_name, self._data
+                )
+
         except Exception as e:
             self.notify(f"[red]✗[/red] Error loading {filepath} file: {e}")
             self._data = None
             self._filepath = None
 
+    @on(PeekleRepl.QueryExecuted)
+    def handle_query_executed(self, message: PeekleRepl.QueryExecuted) -> None:
+        """Handle query executed message to update tree."""
+        self.query_one(PeekleTree).update_tree_data(message.query, message.result)
+
     def compose(self) -> ComposeResult:
         yield Header(icon="")
-        yield PeekleRepl().data_bind(PeekleApp._data)
-        yield PeekleTree().data_bind(PeekleApp._data, PeekleApp._filepath)
+        yield PeekleRepl()
+        yield PeekleTree()
         yield Footer(show_command_palette=False)
 
 
@@ -545,7 +606,7 @@ Usage:
   uv run blockether_peekle data.pkl
 
 In the REPL:
-  - Your data is available as 'x'
+  - By default, your data is available as 'x'
   - Press Tab for autocomplete
         """,
     )

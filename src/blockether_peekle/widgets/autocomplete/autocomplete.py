@@ -157,7 +157,7 @@ class Autocomplete(Widget, Generic[TargetWidget]):
         self.set_interval(0.2, lambda: self.call_after_refresh(self._align_to_target))
 
     def _submit(self) -> None:
-        """Submit the current text area content."""
+        """Submit the current widget content."""
         if not self.target:
             return
 
@@ -220,7 +220,7 @@ class Autocomplete(Widget, Generic[TargetWidget]):
                 event.prevent_default()
                 event.stop()
                 self._complete(option_index=highlighted)
-            elif event.key == "tab":
+            elif event.key == "tab" and self.display and option_list.option_count > 0:
                 event.prevent_default()
                 event.stop()
                 self._complete(option_index=highlighted)
@@ -246,9 +246,6 @@ class Autocomplete(Widget, Generic[TargetWidget]):
 
         This is when the user highlights an option in the dropdown and presses tab or enter.
         """
-        if not self.display or self.option_list.option_count == 0:
-            return
-
         option_list = self.option_list
         highlighted = option_index
         option = cast(AutocompleteOption, option_list.get_option_at_index(highlighted))
