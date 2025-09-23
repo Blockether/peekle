@@ -1,5 +1,5 @@
 """Widgets package for Blockether Peekle."""
 
-from .text_area_autocomplete import TextAreaAutocomplete
+from .autocomplete import TextAreaAutocomplete
 
 __all__ = ["TextAreaAutocomplete"]

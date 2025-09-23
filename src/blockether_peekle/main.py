@@ -17,8 +17,8 @@ from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from jedi import Interpreter
 
+from jedi import Interpreter
 from rich.highlighter import ReprHighlighter
 from rich.tree import Tree as RichTree
 from textual import log, on
@@ -30,23 +30,84 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import (
-    TextArea,
     Footer,
     Header,
     Input,
     Label,
     RichLog,
     Static,
+    TextArea,
     Tree,
 )
 from textual.widgets.tree import TreeNode
 
 from blockether_peekle.utils import format_value
-from blockether_peekle.widgets import TextAreaAutocomplete
-from blockether_peekle.widgets.text_area_autocomplete import (
-    AutocompleteOption,
+from blockether_peekle.widgets.autocomplete import (
+    PathAutocomplete,
+    PathOption,
     TargetState,
+    TextAreaAutocomplete,
+    TextAreaOption,
 )
+
+
+class LoadFilePathInput(PathAutocomplete):
+    _extensions = [".pkl", ".pickle", ".p"]
+
+    class Selected(Message):
+        """Path selected message."""
+
+        def __init__(self, path: str) -> None:
+            self.path = path
+            super().__init__()
+
+    def get_candidates(self, target_state: TargetState) -> list[PathOption]:
+        candidates = super().get_candidates(target_state)
+
+        return [
+            item
+            for item in candidates
+            if (self.path / item.value).is_dir()
+            or item.value.endswith(tuple(self._extensions))
+        ]
+
+    def post_completion(self) -> None:
+        if not self.target.value.endswith(tuple(self._extensions)):
+            return super().post_completion()
+
+        self.post_message(self.Selected(self.target.value))
+        self.option_list.remove()
+        self.remove()
+        self.app.pop_screen()
+
+
+class LoadFileScreen(ModalScreen):
+    DEFAULT_CSS = """
+    LoadFileScreen {
+        align: center middle;
+    }
+
+    #dialog {
+        padding-left: 1;
+        width: 90%;
+        height: 5;
+        border: thick $background 60%;
+        background: $surface;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        input_widget = Input(placeholder="Enter a path...", compact=True)
+
+        yield Widget(
+            Label("Load pickle file"),
+            input_widget,
+            LoadFilePathInput(target=input_widget),
+            id="dialog",
+        )
+
+    def key_escape(self) -> None:
+        self.app.pop_screen()
 
 
 class PeekleRepl(Container):
@@ -175,7 +236,7 @@ class PeekleRepl(Container):
         tree.add(format_value(result))
         self.query_one(RichLog).write(tree)
 
-    def candidates_callback(self, state: TargetState) -> list[AutocompleteOption]:
+    def candidates_callback(self, state: TargetState) -> list[TextAreaOption]:
         row, col = state.cursor_position
         script = Interpreter(state.text, [self._locals, locals(), globals()])
         completions = script.complete(line=row + 1, column=col, fuzzy=True)
@@ -193,7 +254,7 @@ class PeekleRepl(Container):
         }
 
         return [
-            AutocompleteOption(
+            TextAreaOption(
                 f"{c.name} [{type_colors.get(c.type, 'bold magenta')}]{c.type}[/{type_colors.get(c.type, 'bold magenta')}]",
                 c.name,
                 c.get_completion_prefix_length(),
@@ -418,6 +479,10 @@ class PeekleTree(Container):
 class PeekleApp(App):
     ENABLE_COMMAND_PALETTE = False
 
+    BINDINGS = [
+        Binding(key="ctrl+l", action="trigger_load_file_menu", description="Load file"),
+    ]
+
     _filepath: reactive[Optional[Path]] = reactive(None)
     _data: reactive[Any] = reactive(None)
 
@@ -432,10 +497,20 @@ class PeekleApp(App):
         if self._filepath:
             self._load_file(self._filepath)
 
+    def action_trigger_load_file_menu(self) -> None:
+        self.push_screen(LoadFileScreen())
+
+    def on_load_file_path_input_selected(
+        self, message: LoadFilePathInput.Selected
+    ) -> None:
+        self._load_file(Path(message.path))
+
     def _load_file(self, filepath: Path) -> None:
         """Load a pickle file."""
         try:
             if filepath:
+                self._filepath = filepath
+
                 with open(filepath, "rb") as f:
                     self._data = pickle.load(f)
 

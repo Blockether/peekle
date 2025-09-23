@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from operator import itemgetter
 from typing import (
+    Any,
     Callable,
     ClassVar,
+    Generic,
     Sequence,
+    TypeVar,
+    Union,
     cast,
 )
+
 from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
@@ -15,12 +21,17 @@ from textual.binding import Binding
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.geometry import Offset, Region, Spacing
+from textual.message import Message
 from textual.style import Style
 from textual.widget import Widget
-from textual.widgets import TextArea, OptionList
-from textual.widgets.text_area import Location
+from textual.widgets import Input, OptionList, TextArea
 from textual.widgets.option_list import Option
-from textual.message import Message
+from textual.widgets.text_area import Location
+
+# Type variable for target widget (TextArea or Input)
+TargetWidget = TypeVar("TargetWidget", TextArea, Input)
+
+AutocompleteOptionType = TypeVar("AutocompleteOptionType", bound="AutocompleteOption")
 
 
 @dataclass
@@ -36,14 +47,9 @@ class AutocompleteOption(Option):
     def __init__(
         self,
         prompt: str | Content,
-        value: str,
-        completion_prefix_length: int,
         id: str | None = None,
         disabled: bool = False,
     ) -> None:
-        self.value = value
-        self.completion_prefix_length = completion_prefix_length
-
         super().__init__(prompt, id, disabled)
 
 
@@ -57,13 +63,13 @@ class AutoCompleteList(OptionList):
     pass
 
 
-class TextAreaAutocomplete(Widget):
+class Autocomplete(Widget, Generic[TargetWidget]):
     BINDINGS = [
         Binding("escape", "hide", "Hide dropdown", show=False),
     ]
 
     DEFAULT_CSS = """\
-    TextAreaAutocomplete {
+    Autocomplete {
         height: auto;
         width: auto;
         max-height: 12;
@@ -95,7 +101,7 @@ class TextAreaAutocomplete(Widget):
     }
 
     class Submitted(Message):
-        """TextArea submitted message."""
+        """Target widget submitted message."""
 
         def __init__(self, text: str) -> None:
             self.text = text
@@ -103,9 +109,9 @@ class TextAreaAutocomplete(Widget):
 
     def __init__(
         self,
-        target: TextArea,
-        candidates: Callable[[TargetState], list[AutocompleteOption]] | None = None,
-        *,
+        target: TargetWidget,
+        candidates: Callable[[TargetState], Sequence[AutocompleteOptionType]]
+        | None = None,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
@@ -114,7 +120,7 @@ class TextAreaAutocomplete(Widget):
         """An autocomplete widget.
 
         Args:
-            target: An TextArea instance or a selector string used to query an TextArea instance.
+            target: A target widget instance (TextArea or Input) or a selector string.
                 If a selector is used, remember that widgets are not available until the widget has been mounted (don't
                 use the selector in `compose` - use it in `on_mount` instead).
             candidates: The candidates to match on, or a function which returns the candidates to match on.
@@ -123,20 +129,20 @@ class TextAreaAutocomplete(Widget):
                 own custom `get_candidates` method.
         """
         super().__init__(name=name, id=id, classes=classes, disabled=disabled)
-        self._target = target
+        self._target: TargetWidget = target
 
         # Users can supply strings as a convenience for the simplest cases,
         # so let's convert them to AutocompleteOptions.
         self.candidates: (
-            list[AutocompleteOption]
-            | Callable[[TargetState], list[AutocompleteOption]]
+            Sequence[AutocompleteOption]
+            | Callable[[TargetState], Sequence[AutocompleteOptionType]]
             | None
         )
         """The candidates to match on, or a function which returns the candidates to match on."""
         self.candidates = candidates
 
         self._target_state = TargetState("", (0, 0))
-        """Cached state of the target TextArea."""
+        """Cached state of the target TargetWidget."""
 
     def compose(self) -> ComposeResult:
         option_list = AutoCompleteList()
@@ -155,7 +161,9 @@ class TextAreaAutocomplete(Widget):
         if not self.target:
             return
 
-        text = self.target.text
+        text = (
+            self.target.text if isinstance(self.target, TextArea) else self.target.value
+        )
         self.post_message(self.Submitted(text))
         self.target.clear()
         self.action_hide()
@@ -190,7 +198,7 @@ class TextAreaAutocomplete(Widget):
                         # Don't prevent default behavior in this case
                         return
 
-                # If you press `down` while in an TextArea and the autocomplete is currently
+                # If you press `down` while in an Widget and the autocomplete is currently
                 # hidden, then we should show the dropdown.
                 event.prevent_default()
                 event.stop()
@@ -222,7 +230,7 @@ class TextAreaAutocomplete(Widget):
                     event.stop()
                 self.action_hide()
 
-        if isinstance(event, TextArea.Changed):
+        if isinstance(event, Input.Changed) or isinstance(event, TextArea.Changed):
             # We suppress Changed events from the target widget, so that we don't
             # handle change events as a result of performing a completion.
             self._handle_target_update()
@@ -234,7 +242,7 @@ class TextAreaAutocomplete(Widget):
         self.styles.display = "block"
 
     def _complete(self, option_index: int) -> None:
-        """Do the completion (i.e. insert the selected item into the target TextArea).
+        """Do the completion (i.e. insert the selected item into the target Widget).
 
         This is when the user highlights an option in the dropdown and presses tab or enter.
         """
@@ -244,62 +252,28 @@ class TextAreaAutocomplete(Widget):
         option_list = self.option_list
         highlighted = option_index
         option = cast(AutocompleteOption, option_list.get_option_at_index(highlighted))
-        with self.prevent(TextArea.Changed):
-            self.apply_completion(
-                option.value, option.completion_prefix_length, self._get_target_state()
-            )
+        with self.prevent(Input.Changed, TextArea.Changed):
+            self.apply_completion(option, self._get_target_state())
         self.post_completion()
 
     def post_completion(self) -> None:
         """This method is called after a completion is applied. By default, it simply hides the dropdown."""
         self.action_hide()
 
-    def apply_completion(
-        self, value: str, completion_prefix_length: int, state: TargetState
-    ) -> None:
+    def apply_completion(self, option: Any, state: TargetState) -> None:
         """Apply the completion to the target widget.
 
         This method updates the state of the target widget to the reflect
         the value the user has chosen from the dropdown list.
         """
-        target = self.target
-        row, col = state.cursor_position
-        # Calculate the start position by going back completion_prefix_length characters
-        start_col = max(0, col - completion_prefix_length)
-        start_location = (row, start_col)
-
-        # Find the end of the current word (in case cursor is in the middle)
-        text = state.text
-        line = text.split("\n")[row] if "\n" in text else text
-        end_col = col
-
-        # Move end_col forward to include any remaining characters of the current word
-        while end_col < len(line) and (line[end_col].isalnum() or line[end_col] == "_"):
-            end_col += 1
-
-        end_location = (row, end_col)
-
-        # Replace from the start of the prefix to the end of the word
-        target.replace(
-            value, start_location, end_location, maintain_selection_offset=False
+        raise NotImplementedError(
+            "You must implement apply_completion in your Autocomplete subclass"
         )
 
-        # We need to rebuild here because we've prevented the Changed events
-        # from being sent to the target widget, meaning AutoComplete won't spot
-        # intercept that message, and would not trigger a rebuild like it normally
-        # does when a Changed event is received.
-        new_target_state = self._get_target_state()
-        self._rebuild_options(new_target_state)
-
     @property
-    def target(self) -> TextArea:
+    def target(self) -> TargetWidget:
         """The resolved target widget."""
-        if isinstance(self._target, TextArea):
-            return self._target
-        else:
-            target = self.screen.query_one(self._target)
-            assert isinstance(target, TextArea)
-            return target
+        return self._target
 
     def _subscribe_to_target(self) -> None:
         """Attempt to subscribe to the target widget, if it's available."""
@@ -315,27 +289,35 @@ class TextAreaAutocomplete(Widget):
     def _align_to_target(self) -> None:
         """Align the dropdown to the position of the cursor within
         the target widget, and constrain it to be within the screen."""
-        x, y = self.target.cursor_screen_offset
-        dropdown = self.option_list
-        width, height = dropdown.outer_size
+        try:
+            x, y = self.target.cursor_screen_offset
+            dropdown = self.option_list
+            width, height = dropdown.outer_size
 
-        # Constrain the dropdown within the screen.
-        x, y, _width, _height = Region(x - 1, y + 1, width, height).constrain(
-            "inside",
-            "none",
-            Spacing.all(0),
-            self.screen.scrollable_content_region,
-        )
-        self.absolute_offset = Offset(x, y)
-        self.refresh(layout=True)
+            # Constrain the dropdown within the screen.
+            x, y, _width, _height = Region(x - 1, y + 1, width, height).constrain(
+                "inside",
+                "none",
+                Spacing.all(0),
+                self.screen.scrollable_content_region,
+            )
+            self.absolute_offset = Offset(x, y)
+            self.refresh(layout=True)
+        except NoMatches:
+            return
 
     def _get_target_state(self) -> TargetState:
         """Get the state of the target widget."""
         target = self.target
-        return TargetState(
-            text=target.text,
-            cursor_position=target.cursor_location,
-        )
+        if isinstance(target, TextArea):
+            return TargetState(
+                text=target.text,
+                cursor_position=target.cursor_location,
+            )
+        else:
+            return TargetState(
+                text=target.value, cursor_position=(0, target.cursor_position)
+            )
 
     def _handle_focus_change(self, has_focus: bool) -> None:
         """Called when the focus of the target widget changes."""
@@ -355,7 +337,7 @@ class TextAreaAutocomplete(Widget):
         search_string = self.get_search_string(self._target_state)
 
         # Determine visibility after the user makes a change in the
-        # target widget (e.g. typing in a character in the TextArea).
+        # target widget (e.g. typing in a character in the Widget).
         self._rebuild_options(self._target_state)
         self._align_to_target()
 
@@ -398,8 +380,10 @@ class TextAreaAutocomplete(Widget):
         """
         option_list = self.option_list
         option_list.clear_options()
+
         if self.target.has_focus:
             candidates = self.get_candidates(target_state)
+
             if candidates:
                 option_list.add_options(candidates)
                 option_list.highlighted = 0
@@ -414,14 +398,14 @@ class TextAreaAutocomplete(Widget):
         """
         return target_state.text
 
-    def get_candidates(self, target_state: TargetState) -> list[AutocompleteOption]:
+    def get_candidates(self, target_state: TargetState) -> Sequence[AutocompleteOption]:
         """Get the candidates to match against."""
         candidates = self.candidates
         if isinstance(candidates, Sequence):
             return list(candidates)
         elif candidates is None:
             raise NotImplementedError(
-                "You must implement get_candidates in your TextAreaAutocomplete subclass, because candidates is None"
+                "You must implement get_candidates in your Autocomplete subclass, because candidates is None"
             )
         else:
             # candidates is a callable
