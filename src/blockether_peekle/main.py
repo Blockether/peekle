@@ -87,11 +87,18 @@ class LoadFileScreen(ModalScreen[LoadFileScreenState]):
     }
 
     #dialog {
-        padding-left: 1;
+        padding: 1 1 0 1;
         width: 90%;
         height: auto;
         border: thick $background 60%;
+        border-title-color: $foreground;
+        border-title-style: bold;
         background: $surface;
+    }
+
+    Input {
+        border: solid $foreground !important;
+        border-title-color: $foreground !important;
     }
 
     Container {
@@ -102,6 +109,9 @@ class LoadFileScreen(ModalScreen[LoadFileScreenState]):
         margin-bottom: 1;
     }
     """
+
+    def on_mount(self) -> None:
+        self.query_one("#dialog").border_title = "Load Pickle File"
 
     @on(LoadFilePathInput.Submitted)
     def handle_load_file_path_input_submitted(
@@ -122,20 +132,21 @@ class LoadFileScreen(ModalScreen[LoadFileScreenState]):
             )
 
     def compose(self) -> ComposeResult:
-        input_widget = Input(placeholder="~/")
+        path_input_widget = Input(placeholder="~/")
+        path_input_widget.border_title = "File path"
+
+        variable_name_input_widget = Input(
+            placeholder="Variable name", id="varname", value="x"
+        )
+        variable_name_input_widget.border_title = "Variable name"
 
         yield Widget(
             Container(
-                Label("Pickle file path"),
-                input_widget,
-                LoadFilePathInput(target=input_widget),
+                path_input_widget,
+                LoadFilePathInput(target=path_input_widget),
                 id="dialog-path",
             ),
-            Container(
-                Label("Variable name"),
-                Input(placeholder="Variable name", id="varname", value="x"),
-                id="dialog-varname",
-            ),
+            variable_name_input_widget,
             id="dialog",
         )
 
