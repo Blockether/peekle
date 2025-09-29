@@ -22,7 +22,7 @@ from attr import dataclass
 from jedi import Interpreter
 from rich.highlighter import ReprHighlighter
 from rich.tree import Tree as RichTree
-from textual import log, on
+from textual import log, on, events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal
@@ -154,6 +154,12 @@ class LoadFileScreen(ModalScreen[LoadFileScreenState]):
         self.app.pop_screen()
 
 
+class PeekleReplTextArea(TextArea):
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "ctrl+enter":
+            self.insert("\n")
+
+
 class PeekleRepl(Container):
     DEFAULT_CSS = """
     RichLog {
@@ -167,6 +173,10 @@ class PeekleRepl(Container):
     }
     """
 
+    BINDINGS = [
+        Binding(key="ctrl+l", action="clear", description="Clear"),
+    ]
+
     class QueryExecuted(Message):
         """Query executed message."""
 
@@ -179,8 +189,13 @@ class PeekleRepl(Container):
     _locals_data_variable: reactive[str] = reactive("x")
 
     def on_mount(self) -> None:
+        self.hook_locals()
+
         if self._text_area_widget:
             self._text_area_widget.focus()
+
+    def action_clear(self) -> None:
+        self.query_one(RichLog).clear()
 
     def execute_query(self, query: str) -> Any:
         """Execute a Python expression or statement as a query on the data."""
@@ -269,6 +284,12 @@ class PeekleRepl(Container):
             self.query_one(RichLog).write(f"[red]Error:[/red] {e}")
             return None
 
+    def hook_locals(self) -> None:
+        self._locals = {
+            "print": self.query_one(RichLog).write,
+            "clear": self.query_one(RichLog).clear,
+        }
+
     def update_locals_data(self, variable_name: str, data: Any) -> None:
         """When data changes, update locals and completions."""
         if data is None:
@@ -287,7 +308,7 @@ class PeekleRepl(Container):
         self.query_one(RichLog).write(f">>> {message.text.strip()}")
         result = self.execute_query(message.text)
 
-        if result is None:
+        if result is None or isinstance(result, RichLog):
             return
 
         self.post_message(self.QueryExecuted(message.text, result))
@@ -325,7 +346,7 @@ class PeekleRepl(Container):
     def compose(self) -> ComposeResult:
         yield RichLog(highlight=True, markup=True)
 
-        self._text_area_widget = TextArea.code_editor(
+        self._text_area_widget = PeekleReplTextArea.code_editor(
             language="python",
             tab_behavior="focus",
             show_line_numbers=False,
@@ -537,7 +558,11 @@ class PeekleApp(App):
     ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
-        Binding(key="ctrl+l", action="trigger_load_file_menu", description="Load file"),
+        Binding(
+            key="ctrl+o",
+            action="trigger_load_file_menu",
+            description="Open pickle file",
+        ),
     ]
 
     _filepath: reactive[Optional[Path]] = reactive(None)

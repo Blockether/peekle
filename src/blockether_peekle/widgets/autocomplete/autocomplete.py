@@ -171,8 +171,9 @@ class Autocomplete(Widget, Generic[TargetWidget]):
     def _listen_to_messages(self, event: events.Event) -> None:
         """Listen to some events of the target widget."""
 
-        if isinstance(event, events.Key) and event.key == "ctrl+enter":
+        if isinstance(event, events.Key) and event.key == "enter":
             self._submit()
+            return
 
         try:
             option_list = self.option_list
