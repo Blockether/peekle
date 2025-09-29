@@ -55,6 +55,10 @@ uv run blockether_peekle data.pkl
 - **Full Python Expressions**: Execute any Python code including imports, assignments, function definitions and built-in functions
 - **Persistent Environment**: Variables and imports persist across commands
 
+<img src="./docs/features/open-file.png" alt="Open Pickle File" width="75%"/>
+
+<img src="./docs/features/repl.png" alt="REPL" width="75%"/>
+
 ## Roadmap
 
 TODO
