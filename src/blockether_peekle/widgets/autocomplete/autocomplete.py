@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from operator import itemgetter
 from typing import (
     Any,
     Callable,
@@ -12,7 +10,6 @@ from typing import (
     Generic,
     Sequence,
     TypeVar,
-    Union,
     cast,
 )
 
@@ -24,7 +21,6 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.geometry import Offset, Region, Spacing
 from textual.message import Message
-from textual.style import Style
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, TextArea
 from textual.widgets.option_list import Option
@@ -112,8 +108,7 @@ class Autocomplete(Widget, Generic[TargetWidget]):
     def __init__(
         self,
         target: TargetWidget,
-        candidates: Callable[[TargetState], Sequence[AutocompleteOptionType]]
-        | None = None,
+        candidates: Callable[[TargetState], Sequence[AutocompleteOptionType]] | None = None,
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
@@ -135,11 +130,7 @@ class Autocomplete(Widget, Generic[TargetWidget]):
 
         # Users can supply strings as a convenience for the simplest cases,
         # so let's convert them to AutocompleteOptions.
-        self.candidates: (
-            Sequence[AutocompleteOption]
-            | Callable[[TargetState], Sequence[AutocompleteOptionType]]
-            | None
-        )
+        self.candidates: Sequence[AutocompleteOption] | Callable[[TargetState], Sequence[AutocompleteOptionType]] | None
         """The candidates to match on, or a function which returns the candidates to match on."""
         self.candidates = candidates
 
@@ -163,9 +154,7 @@ class Autocomplete(Widget, Generic[TargetWidget]):
         if not self.target:
             return
 
-        text = (
-            self.target.text if isinstance(self.target, TextArea) else self.target.value
-        )
+        text = self.target.text if isinstance(self.target, TextArea) else self.target.value
         self.post_message(self.Submitted(text))
         self.target.clear()
         self.action_hide()
@@ -192,11 +181,7 @@ class Autocomplete(Widget, Generic[TargetWidget]):
                 if option_list.option_count == 1:
                     search_string = self.get_search_string(self._get_target_state())
                     first_option = option_list.get_option_at_index(0).prompt
-                    text_from_option = (
-                        first_option.plain
-                        if isinstance(first_option, Text)
-                        else first_option
-                    )
+                    text_from_option = first_option.plain if isinstance(first_option, Text) else first_option
                     if text_from_option == search_string:
                         # Don't prevent default behavior in this case
                         return
@@ -266,9 +251,7 @@ class Autocomplete(Widget, Generic[TargetWidget]):
         This method updates the state of the target widget to the reflect
         the value the user has chosen from the dropdown list.
         """
-        raise NotImplementedError(
-            "You must implement apply_completion in your Autocomplete subclass"
-        )
+        raise NotImplementedError("You must implement apply_completion in your Autocomplete subclass")
 
     @property
     def target(self) -> TargetWidget:
@@ -315,9 +298,7 @@ class Autocomplete(Widget, Generic[TargetWidget]):
                 cursor_position=target.cursor_location,
             )
         else:
-            return TargetState(
-                text=target.value, cursor_position=(0, target.cursor_position)
-            )
+            return TargetState(text=target.value, cursor_position=(0, target.cursor_position))
 
     def _handle_focus_change(self, has_focus: bool) -> None:
         """Called when the focus of the target widget changes."""
@@ -365,9 +346,7 @@ class Autocomplete(Widget, Generic[TargetWidget]):
             return False
         elif option_count == 1:
             first_option = option_list.get_option_at_index(0).prompt
-            text_from_option = (
-                first_option.plain if isinstance(first_option, Text) else first_option
-            )
+            text_from_option = first_option.plain if isinstance(first_option, Text) else first_option
             return text_from_option != search_string
         else:
             return True

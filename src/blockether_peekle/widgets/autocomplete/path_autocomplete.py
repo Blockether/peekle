@@ -86,9 +86,7 @@ class PathAutocomplete(Autocomplete[Input]):
             directory = (
                 self.path / path_segment
                 if path_segment != "/"
-                else Path(path_segment)
-                if path_segment.startswith("/")
-                else self.path / path_segment
+                else Path(path_segment) if path_segment.startswith("/") else self.path / path_segment
             )
         else:
             directory = self.path
@@ -114,9 +112,7 @@ class PathAutocomplete(Autocomplete[Input]):
             if not self.show_dotfiles and completion.startswith("."):
                 continue
             # Filter based on search prefix
-            if search_prefix and not completion.lower().startswith(
-                search_prefix.lower()
-            ):
+            if search_prefix and not completion.lower().startswith(search_prefix.lower()):
                 continue
             if entry.is_dir():
                 completion += "/"
@@ -183,9 +179,7 @@ class PathAutocomplete(Autocomplete[Input]):
         default_behavior = super().should_show_dropdown(search_string)
 
         return (
-            default_behavior
-            or (search_string == "" and self.target.value != "")
-            and self.option_list.option_count > 1
+            default_behavior or (search_string == "" and self.target.value != "") and self.option_list.option_count > 1
         )
 
     def clear_directory_cache(self) -> None:

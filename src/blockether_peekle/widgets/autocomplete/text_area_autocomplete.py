@@ -66,9 +66,7 @@ class TextAreaAutocomplete(Autocomplete[TextArea]):
         end_location = (row, end_col)
 
         # Replace from the start of the prefix to the end of the word
-        target.replace(
-            option.value, start_location, end_location, maintain_selection_offset=False
-        )
+        target.replace(option.value, start_location, end_location, maintain_selection_offset=False)
 
         # We need to rebuild here because we've prevented the Changed events
         # from being sent to the target widget, meaning AutoComplete won't spot

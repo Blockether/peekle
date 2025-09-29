@@ -6,26 +6,20 @@ query capabilities, intellisense, and interactive Python expressions.
 
 import argparse
 import ast
-import builtins
-import keyword
 import os
 import pickle
-import re
 import sys
 import traceback
-from collections.abc import Iterable
-from functools import lru_cache
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
-from attr import dataclass
 from jedi import Interpreter
-from rich.highlighter import ReprHighlighter
 from rich.tree import Tree as RichTree
-from textual import log, on, events
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal
+from textual.containers import Container
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen
@@ -34,12 +28,9 @@ from textual.widgets import (
     Footer,
     Header,
     Input,
-    Label,
     RichLog,
-    Static,
     TextArea,
     Tree,
-    Rule,
 )
 from textual.widgets.tree import TreeNode
 
@@ -65,16 +56,10 @@ class LoadFilePathInput(PathAutocomplete):
     def get_candidates(self, target_state: TargetState) -> list[PathOption]:
         candidates = super().get_candidates(target_state)
 
-        return [
-            item
-            for item in candidates
-            if os.path.isdir(item.path) or item.value.endswith(tuple(self._extensions))
-        ]
+        return [item for item in candidates if os.path.isdir(item.path) or item.value.endswith(tuple(self._extensions))]
 
     def post_completion(self) -> None:
-        if not self.target.value.endswith(
-            tuple(self._extensions)
-        ) or not os.path.isfile(self.target.value):
+        if not self.target.value.endswith(tuple(self._extensions)) or not os.path.isfile(self.target.value):
             return super().post_completion()
 
         self.post_message(self.Submitted(self.target.value))
@@ -114,9 +99,7 @@ class LoadFileScreen(ModalScreen[LoadFileScreenState]):
         self.query_one("#dialog").border_title = "Open Pickle File"
 
     @on(LoadFilePathInput.Submitted)
-    def handle_load_file_path_input_submitted(
-        self, message: LoadFilePathInput.Submitted
-    ) -> None:
+    def handle_load_file_path_input_submitted(self, message: LoadFilePathInput.Submitted) -> None:
         """Handle submitted code from the input."""
         self.query("#varname").focus()
 
@@ -135,9 +118,7 @@ class LoadFileScreen(ModalScreen[LoadFileScreenState]):
         path_input_widget = Input(placeholder="~/")
         path_input_widget.border_title = "File path"
 
-        variable_name_input_widget = Input(
-            placeholder="Variable name", id="varname", value="x"
-        )
+        variable_name_input_widget = Input(placeholder="Variable name", id="varname", value="x")
         variable_name_input_widget.border_title = "Variable name"
 
         yield Widget(
@@ -177,9 +158,7 @@ class PeekleReplTextAreaAutocomplete(TextAreaAutocomplete):
                 row, col = state.cursor_position
                 start_col = max(0, col - option.completion_prefix_length)
 
-                last_char = self.target.get_text_range(
-                    (row, start_col - 1), (row, start_col)
-                )
+                last_char = self.target.get_text_range((row, start_col - 1), (row, start_col))
 
                 if last_char == "[":
                     self.target.insert("]")
@@ -260,9 +239,7 @@ class PeekleRepl(Container):
                         else:
                             var_name = str(target)
                         result = self._locals.get(var_name)
-                        self.query_one(RichLog).write(
-                            f"[green]✓[/green] {var_name} = {format_value(result)}"
-                        )
+                        self.query_one(RichLog).write(f"[green]✓[/green] {var_name} = {format_value(result)}")
                         return result
 
                     # Check if it's a function/class definition or other statement
@@ -327,9 +304,7 @@ class PeekleRepl(Container):
         self._locals_data_variable = variable_name
 
     @on(PeekleReplTextAreaAutocomplete.Submitted)
-    def handle_text_area_submitted(
-        self, message: PeekleReplTextAreaAutocomplete.Submitted
-    ) -> None:
+    def handle_text_area_submitted(self, message: PeekleReplTextAreaAutocomplete.Submitted) -> None:
         """Handle submitted code from the text area."""
         self.query_one(RichLog).write(f">>> {message.text.strip()}")
         result = self.execute_query(message.text)
@@ -423,9 +398,7 @@ class PeekleRepl(Container):
             compact=True,
         )
         yield self._text_area_widget
-        yield PeekleReplTextAreaAutocomplete(
-            self._text_area_widget, candidates=self.candidates_callback
-        )
+        yield PeekleReplTextAreaAutocomplete(self._text_area_widget, candidates=self.candidates_callback)
 
 
 class PeekleTree(Container):
@@ -451,9 +424,7 @@ class PeekleTree(Container):
 
     def _is_expandable(self, obj: Any) -> bool:
         """Check if an object should be expandable in the tree."""
-        return isinstance(obj, (dict, list, tuple, set)) or (
-            hasattr(obj, "__dict__") and not isinstance(obj, type)
-        )
+        return isinstance(obj, (dict, list, tuple, set)) or (hasattr(obj, "__dict__") and not isinstance(obj, type))
 
     def _get_object_summary(self, obj: Any) -> str:
         """Get a summary representation of an object."""
@@ -467,14 +438,10 @@ class PeekleTree(Container):
         else:
             return format_value(obj)
 
-    def _build_tree_level(
-        self, obj: Any, parent_node: TreeNode, start_index: int = 0
-    ) -> None:
+    def _build_tree_level(self, obj: Any, parent_node: TreeNode, start_index: int = 0) -> None:
         """Build only one level of the tree (for lazy loading)."""
         if isinstance(obj, dict):
-            items = list(obj.items())[
-                start_index : start_index + self._MAX_INITIAL_ITEMS
-            ]
+            items = list(obj.items())[start_index : start_index + self._MAX_INITIAL_ITEMS]
             for key, value in items:
                 key_str = f"[bold cyan]{repr(key)}[/bold cyan]"
                 value_type = f"[bold magenta]{type(value).__name__}[/bold magenta]"
@@ -546,15 +513,11 @@ class PeekleTree(Container):
                 try:
                     attrs = obj.model_dump()
                 except Exception:
-                    attrs = {
-                        k: v for k, v in vars(obj).items() if not k.startswith("_")
-                    }
+                    attrs = {k: v for k, v in vars(obj).items() if not k.startswith("_")}
             else:
                 attrs = {k: v for k, v in vars(obj).items() if not k.startswith("_")}
 
-            items = list(attrs.items())[
-                start_index : start_index + self._MAX_INITIAL_ITEMS
-            ]
+            items = list(attrs.items())[start_index : start_index + self._MAX_INITIAL_ITEMS]
             for key, value in items:
                 key_str = f"[bold magenta]{key}[/bold magenta]"
                 value_type = f"[bold cyan]{type(value).__name__}[/bold cyan]"
@@ -669,16 +632,10 @@ class PeekleApp(App):
                 with open(filepath, "rb") as f:
                     self._data = pickle.load(f)
 
-                    self.notify(
-                        f"[green]✓[/green] Loaded: {filepath} [dim]Type: {type(self._data).__name__}[/dim]"
-                    )
+                    self.notify(f"[green]✓[/green] Loaded: {filepath} [dim]Type: {type(self._data).__name__}[/dim]")
 
-                self.query_one(PeekleRepl).update_locals_data(
-                    self._variable_name, self._data
-                )
-                self.query_one(PeekleTree).update_tree_data(
-                    self._variable_name, self._data
-                )
+                self.query_one(PeekleRepl).update_locals_data(self._variable_name, self._data)
+                self.query_one(PeekleTree).update_tree_data(self._variable_name, self._data)
 
         except Exception as e:
             self.notify(f"[red]✗[/red] Error loading {filepath} file: {e}")
@@ -719,9 +676,7 @@ In the REPL:
 
     parser.add_argument("file", nargs="?", help="Pickle file to load")
 
-    parser.add_argument(
-        "--debug", action="store_true", help="Enable debug mode with full tracebacks"
-    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode with full tracebacks")
 
     args = parser.parse_args()
 
