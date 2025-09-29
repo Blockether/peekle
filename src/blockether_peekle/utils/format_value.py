@@ -15,6 +15,12 @@ def format_value(value: Any, max_length: int = 80) -> str:
         return f"[bold green]{repr(value)}[/bold green]"
     elif isinstance(value, bytes):
         return f"[bold red]<bytes: {len(value)} bytes>[/bold red]"
+    elif isinstance(value, dict):
+        items = list(value.items())[:4]
+        formatted_items = [f"{k}: {type(v).__name__}" for k, v in items]
+        if len(value) > 4:
+            formatted_items.append("...")
+        return f"[bold yellow]{{{', '.join(formatted_items)}}}[/bold yellow]"
     else:
         str_repr = str(value)
         if len(str_repr) > max_length:
