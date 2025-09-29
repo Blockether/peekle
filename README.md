@@ -58,3 +58,8 @@ uv run blockether_peekle data.pkl
 ## Roadmap
 
 TODO
+
+## Special Thanks
+
+- [ptpython](https://github.com/prompt-toolkit/ptpython)
+- [textual-autocomplete](https://github.com/darrenburns/textual-autocomplete)

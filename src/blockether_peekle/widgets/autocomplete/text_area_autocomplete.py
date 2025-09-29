@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import Callable
+from typing import Any, Callable, Dict
 
 from textual.content import Content
 from textual.widgets import TextArea
@@ -13,11 +13,13 @@ class TextAreaOption(AutocompleteOption):
         prompt: str | Content,
         value: str,
         completion_prefix_length: int,
+        meta: Dict[str, Any] | None = None,
         id: str | None = None,
         disabled: bool = False,
     ) -> None:
         self.value = value
         self.completion_prefix_length = completion_prefix_length
+        self.meta = meta or {}
         super().__init__(prompt, id, disabled)
 
 

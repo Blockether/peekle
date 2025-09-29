@@ -1,3 +1,5 @@
+# https://github.com/darrenburns/textual-autocomplete/blob/main/textual_autocomplete/_path_autocomplete.py
+
 from __future__ import annotations
 
 import os

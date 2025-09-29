@@ -111,7 +111,7 @@ class LoadFileScreen(ModalScreen[LoadFileScreenState]):
     """
 
     def on_mount(self) -> None:
-        self.query_one("#dialog").border_title = "Load Pickle File"
+        self.query_one("#dialog").border_title = "Open Pickle File"
 
     @on(LoadFilePathInput.Submitted)
     def handle_load_file_path_input_submitted(
@@ -159,17 +159,43 @@ class PeekleReplTextArea(TextArea):
         if event.key == "ctrl+enter":
             self.insert("\n")
 
+        if event.character == "(":
+            self.insert("()")
+            self.move_cursor_relative(columns=-1)
+            event.prevent_default()
+
+
+class PeekleReplTextAreaAutocomplete(TextAreaAutocomplete):
+    def apply_completion(self, option: TextAreaOption, state: TargetState) -> None:
+        super().apply_completion(option, state)
+
+        if option.meta:
+            if option.meta.get("type") == "function":
+                self.target.insert("()")
+                self.target.move_cursor_relative(columns=-1)
+            elif option.meta.get("type") == "string":
+                row, col = state.cursor_position
+                start_col = max(0, col - option.completion_prefix_length)
+
+                last_char = self.target.get_text_range(
+                    (row, start_col - 1), (row, start_col)
+                )
+
+                if last_char == "[":
+                    self.target.insert("]")
+
 
 class PeekleRepl(Container):
     DEFAULT_CSS = """
     RichLog {
         overflow-y: auto !important;
         height: auto;
-        max-height: 95%;
+        max-height: 0.8fr;
     }
 
-    TextArea {
+    PeekleReplTextArea {
         padding: 0 !important;
+        min-height: 0.2fr;
     }
     """
 
@@ -300,9 +326,9 @@ class PeekleRepl(Container):
 
         self._locals_data_variable = variable_name
 
-    @on(TextAreaAutocomplete.Submitted)
+    @on(PeekleReplTextAreaAutocomplete.Submitted)
     def handle_text_area_submitted(
-        self, message: TextAreaAutocomplete.Submitted
+        self, message: PeekleReplTextAreaAutocomplete.Submitted
     ) -> None:
         """Handle submitted code from the text area."""
         self.query_one(RichLog).write(f">>> {message.text.strip()}")
@@ -317,31 +343,75 @@ class PeekleRepl(Container):
         tree.add(format_value(result))
         self.query_one(RichLog).write(tree)
 
+    # https://github.com/prompt-toolkit/ptpython/blob/main/src/ptpython/completer.py#L216
     def candidates_callback(self, state: TargetState) -> list[TextAreaOption]:
         row, col = state.cursor_position
         script = Interpreter(state.text, [self._locals])
-        completions = script.complete(line=row + 1, column=col, fuzzy=True)
+        if script:
+            try:
+                completions = script.complete(line=row + 1, column=col, fuzzy=True)
+            except TypeError:
+                # Issue #9: bad syntax causes completions() to fail in jedi.
+                # https://github.com/jonathanslenders/python-prompt-toolkit/issues/9
+                pass
+            except UnicodeDecodeError:
+                # Issue #43: UnicodeDecodeError on OpenBSD
+                # https://github.com/jonathanslenders/python-prompt-toolkit/issues/43
+                pass
+            except AttributeError:
+                # Jedi issue #513: https://github.com/davidhalter/jedi/issues/513
+                pass
+            except ValueError:
+                # Jedi issue: "ValueError: invalid \x escape"
+                pass
+            except KeyError:
+                # Jedi issue: "KeyError: u'a_lambda'."
+                # https://github.com/jonathanslenders/ptpython/issues/89
+                pass
+            except OSError:
+                # Jedi issue: "IOError: No such file or directory."
+                # https://github.com/jonathanslenders/ptpython/issues/71
+                pass
+            except AssertionError:
+                # In jedi.parser.__init__.py: 227, in remove_last_newline,
+                # the assertion "newline.value.endswith('\n')" can fail.
+                pass
+            except SystemError:
+                # In jedi.api.helpers.py: 144, in get_stack_at_position
+                # raise SystemError("This really shouldn't happen. There's a bug in Jedi.")
+                pass
+            except NotImplementedError:
+                # See: https://github.com/jonathanslenders/ptpython/issues/223
+                pass
+            except Exception:
+                # Suppress all other Jedi exceptions.
+                pass
+            else:
+                type_colors = {
+                    "module": "bold green",
+                    "class": "bold yellow",
+                    "instance": "bold blue",
+                    "function": "bold cyan",
+                    "param": "bold magenta",
+                    "path": "bold green",
+                    "keyword": "bold red",
+                    "property": "bold blue",
+                    "statement": "bold cyan",
+                }
 
-        type_colors = {
-            "module": "bold green",
-            "class": "bold yellow",
-            "instance": "bold blue",
-            "function": "bold cyan",
-            "param": "bold magenta",
-            "path": "bold green",
-            "keyword": "bold red",
-            "property": "bold blue",
-            "statement": "bold cyan",
-        }
+                return [
+                    TextAreaOption(
+                        f"{c.name} [{type_colors.get(c.type, 'bold magenta')}]{c.type}[/{type_colors.get(c.type, 'bold magenta')}]",
+                        c.name,
+                        c.get_completion_prefix_length(),
+                        meta={
+                            "type": c.type,
+                        },
+                    )
+                    for c in completions
+                ]
 
-        return [
-            TextAreaOption(
-                f"{c.name} [{type_colors.get(c.type, 'bold magenta')}]{c.type}[/{type_colors.get(c.type, 'bold magenta')}]",
-                c.name,
-                c.get_completion_prefix_length(),
-            )
-            for c in completions
-        ]
+        return []
 
     def compose(self) -> ComposeResult:
         yield RichLog(highlight=True, markup=True)
@@ -353,7 +423,7 @@ class PeekleRepl(Container):
             compact=True,
         )
         yield self._text_area_widget
-        yield TextAreaAutocomplete(
+        yield PeekleReplTextAreaAutocomplete(
             self._text_area_widget, candidates=self.candidates_callback
         )
 
@@ -570,7 +640,7 @@ class PeekleApp(App):
     _variable_name: reactive[str] = reactive("x")
 
     def __init__(self, filepath: Optional[Path] = None) -> None:
-        self._text_area_widget: Optional[TextAreaAutocomplete] = None
+        self._text_area_widget: Optional[PeekleReplTextAreaAutocomplete] = None
         super().__init__()
         self._filepath = filepath
 
