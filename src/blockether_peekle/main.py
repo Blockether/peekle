@@ -15,23 +15,17 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from jedi import Interpreter
+from rich.syntax import Syntax
 from rich.tree import Tree as RichTree
 from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
+from textual.containers import Container, Horizontal
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widget import Widget
-from textual.widgets import (
-    Footer,
-    Header,
-    Input,
-    RichLog,
-    TextArea,
-    Tree,
-)
+from textual.widgets import Footer, Input, RichLog, Static, TextArea, Tree
 from textual.widgets.tree import TreeNode
 
 from blockether_peekle.utils import format_value
@@ -136,9 +130,16 @@ class LoadFileScreen(ModalScreen[LoadFileScreenState]):
 
 
 class PeekleReplTextArea(TextArea):
+    @property
+    def gutter_width(self) -> int:
+        return super().gutter_width + 1  # Add extra space for padding
+
     def on_key(self, event: events.Key) -> None:
         if event.key == "ctrl+enter":
             self.insert("\n")
+
+        if event.key == "enter":
+            event.prevent_default()
 
         if event.character == "(":
             self.insert("()")
@@ -170,11 +171,25 @@ class PeekleRepl(Container):
         overflow-y: auto !important;
         height: auto;
         max-height: 0.8fr;
+        background: $surface !important;
     }
 
     PeekleReplTextArea {
         padding: 0 !important;
         min-height: 0.2fr;
+    }
+
+    #repl-container {
+        layout: horizontal;
+        width: 100%;
+        background: #272823;
+    }
+
+    #repl-indicator {
+        width: 3;
+        padding: 0 1;
+        background: $success;
+        color: $text;
     }
     """
 
@@ -217,7 +232,7 @@ class PeekleRepl(Container):
                 if len(parsed.body) > 1:
                     # Execute all statements
                     exec(query, self._locals, self._locals)
-                    self.query_one(RichLog).write("[green]✓[/green] Executed")
+                    self.query_one(RichLog).write("=> [green]✓[/green] Executed")
                     return None
 
                 # Single statement handling
@@ -227,7 +242,7 @@ class PeekleRepl(Container):
                     # Check if it's an import statement
                     if isinstance(stmt, (ast.Import, ast.ImportFrom)):
                         exec(query, self._locals, self._locals)
-                        self.query_one(RichLog).write(f"[green]✓[/green] {query}")
+                        self.query_one(RichLog).write(f"=> [green]✓[/green] {query}")
                         return None
 
                     # Check if it's an assignment
@@ -239,7 +254,7 @@ class PeekleRepl(Container):
                         else:
                             var_name = str(target)
                         result = self._locals.get(var_name)
-                        self.query_one(RichLog).write(f"[green]✓[/green] {var_name} = {format_value(result)}")
+                        self.query_one(RichLog).write(f"=> [green]✓[/green] {var_name} = {format_value(result)}")
                         return result
 
                     # Check if it's a function/class definition or other statement
@@ -255,7 +270,7 @@ class PeekleRepl(Container):
                         ),
                     ):
                         exec(query, self._locals, self._locals)
-                        self.query_one(RichLog).write("[green]✓[/green] Executed")
+                        self.query_one(RichLog).write("=> [green]✓[/green] Executed")
                         return None
 
                     # Check if it's an expression statement
@@ -271,7 +286,7 @@ class PeekleRepl(Container):
                     # Otherwise execute as statement
                     else:
                         exec(query, self._locals, self._locals)
-                        self.query_one(RichLog).write("[green]✓[/green] Executed")
+                        self.query_one(RichLog).write("=> [green]✓[/green] Executed")
                         return None
 
                 # Empty input
@@ -284,12 +299,21 @@ class PeekleRepl(Container):
                 return result
 
         except Exception as e:
-            self.query_one(RichLog).write(f"[red]Error:[/red] {e}")
+            self.query_one(RichLog).write(f"=> [red]Error:[/red] {e}")
             return None
 
     def hook_locals(self) -> None:
         self._locals = {
-            "print": self.query_one(RichLog).write,
+            "print": lambda prompt: self.query_one(RichLog).write(
+                Syntax(
+                    f"=> {prompt}",
+                    "python2",
+                    indent_guides=True,
+                    theme="monokai",
+                    background_color="#1E1E1E",
+                ),
+                expand=True,
+            ),
             "clear": self.query_one(RichLog).clear,
         }
 
@@ -306,7 +330,16 @@ class PeekleRepl(Container):
     @on(PeekleReplTextAreaAutocomplete.Submitted)
     def handle_text_area_submitted(self, message: PeekleReplTextAreaAutocomplete.Submitted) -> None:
         """Handle submitted code from the text area."""
-        self.query_one(RichLog).write(f">>> {message.text.strip()}")
+        self.query_one(RichLog).write(
+            Syntax(
+                f">>> {message.text}",
+                "python2",
+                # line_numbers=True,
+                # indent_guides=True,
+                theme="monokai",
+            ),
+            expand=True,
+        )
         result = self.execute_query(message.text)
 
         if result is None or isinstance(result, RichLog):
@@ -314,9 +347,11 @@ class PeekleRepl(Container):
 
         self.post_message(self.QueryExecuted(message.text, result))
 
-        tree = RichTree(f"[bold]{type(result).__name__}[/bold]")
+        tree = RichTree(
+            f"[bold]{type(result).__name__}[/bold]",
+        )
         tree.add(format_value(result))
-        self.query_one(RichLog).write(tree)
+        self.query_one(RichLog).write(tree, expand=True)
 
     # https://github.com/prompt-toolkit/ptpython/blob/main/src/ptpython/completer.py#L216
     def candidates_callback(self, state: TargetState) -> list[TextAreaOption]:
@@ -389,15 +424,16 @@ class PeekleRepl(Container):
         return []
 
     def compose(self) -> ComposeResult:
-        yield RichLog(highlight=True, markup=True)
+        yield RichLog(markup=True)
 
         self._text_area_widget = PeekleReplTextArea.code_editor(
-            language="python",
-            tab_behavior="focus",
-            show_line_numbers=False,
-            compact=True,
+            language="python", tab_behavior="focus", compact=True, theme="monokai", id="repl-input"
         )
-        yield self._text_area_widget
+        yield Horizontal(
+            Static(">", id="repl-indicator"),
+            self._text_area_widget,
+            id="repl-container",
+        )
         yield PeekleReplTextAreaAutocomplete(self._text_area_widget, candidates=self.candidates_callback)
 
 
@@ -648,7 +684,6 @@ class PeekleApp(App):
         self.query_one(PeekleTree).update_tree_data(message.query, message.result)
 
     def compose(self) -> ComposeResult:
-        yield Header(icon="")
         yield PeekleRepl()
         yield PeekleTree()
         yield Footer(show_command_palette=False)
